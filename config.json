@@ -1,0 +1,21 @@
+{
+    "upstreams": [
+       "localhost:8007" 
+    ],
+    "upstream_path": "/v1/chat/completions",
+    "concurrency": 2,
+    "keep_alive": 100,
+    "cli_refresh_interval_ms": 1000,
+    "template": {
+        "use_beam_search": true,
+         "n": 10,
+         "temperature": 0.5,
+         "ignore_eos": false,
+         "length_penalty": 1.0,
+         "max_tokens": 5,
+         "vllm_xargs": { 
+            "begin_token": "<|sid_begin|>", 
+            "end_token": "<|sid_end|>" 
+        }
+    }
+}
