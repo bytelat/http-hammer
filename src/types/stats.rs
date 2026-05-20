@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64};
 
 #[repr(align(64))]
 pub struct WorkerStats {
@@ -22,7 +22,7 @@ pub struct LocalStats {
     pub max: u64,   
 }
 
-
+/* 
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub rps: usize,
@@ -33,4 +33,4 @@ impl Default for Settings {
         Settings { rps: 0 }
     }
 }
-
+*/

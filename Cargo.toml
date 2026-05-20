@@ -18,6 +18,8 @@ socket2 = "0.5"
 nix = "0.26"
 hdrhistogram = "7"
 chrono = "0.4"
+ratatui = "0.26"
+crossterm = "0.27"
 # Optional but recommended for logging
 log = "0.4"
 env_logger = "0.11"

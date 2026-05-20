@@ -4,8 +4,9 @@ pub struct CliOptions {
     pub file: Option<String>,
 }
 
+/* 
 impl CliOptions {
     fn default() -> Self {
         CliOptions { rps: None, file: None }
     }
-}
+}*/

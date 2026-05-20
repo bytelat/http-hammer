@@ -14,7 +14,7 @@ impl RuntimeSettings {
         self.rps.load(Ordering::Relaxed) as u64
     }
 
-    pub fn set_rps(&self, value: u64) {
+    pub fn _set_rps(&self, value: u64) {
         // Optional: validation
         if value == 0 {
             println!("Warning: RPS set to zero, injector will idle");

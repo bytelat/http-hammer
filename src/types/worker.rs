@@ -1,7 +1,7 @@
 use crossbeam_channel::{Receiver, Sender};
 use std::sync::Arc;
 use super::msgs::{MsgRequest, MsgStats};
-use crate::types::config::Config;
+use crate::types::config::{Config};
 use crate::types::stats::WorkerStats;
 use std::net::TcpStream;
 use std::os::fd::{RawFd, AsRawFd};
@@ -26,6 +26,7 @@ pub struct WorkerConfig {
 
 pub struct ConnSlot {
     upstream: String,
+    opcode: String,
     stream: TcpStream,
     buffer: Vec<u8>,
     busy: bool,
@@ -61,6 +62,14 @@ impl ConnSlot {
     pub fn set_recv_time(&mut self ) {
         self.recv_time = Some(std::time::Instant::now());
     }
+
+    pub fn set_opcode(&mut self, opcode: String) {
+        self.opcode = opcode;
+    }
+
+    pub fn get_opcode(&self) -> &String {
+        &self.opcode
+    }
 }
 
 impl ConnPool {
@@ -92,6 +101,7 @@ impl ConnPool {
                 stream,
                 buffer: Vec::with_capacity(64 * 1024),
                 busy: false,
+                opcode: String::new(),
                 enqueue_time: None.into(), 
                 send_time: None.into(),
                 recv_time: None.into(),
@@ -149,7 +159,12 @@ fn reset_slot(&mut self, idx: usize) {
     }
 
     /// Poll epoll for readable sockets
-    pub fn poll_events(&mut self, buf: &mut [u8], parser: fn(&[u8]) -> Option<(Vec<u8>, &[u8])>, hist: &mut hdrhistogram::Histogram<u64>) -> usize {
+    pub fn poll_events(&mut self, 
+                        buf: &mut [u8], 
+                        parser: fn(&[u8]) -> Option<(Vec<u8>, &[u8])>, 
+                        hist_request: &mut hdrhistogram::Histogram<u64>,
+                        hist_ping: &mut hdrhistogram::Histogram<u64>
+                        ) -> usize {
         let mut events = [EpollEvent::empty(); 128];
 
         let n = epoll_wait(self.epoll_fd, &mut events, 0)
@@ -167,7 +182,7 @@ fn reset_slot(&mut self, idx: usize) {
                     self.conns[idx].buffer.len());
             */
             // read_from returns true when a full HTTP response is parsed
-            let (done, closed) = self.read_from(idx, buf, parser, hist);
+            let (done, closed) = self.read_from(idx, buf, parser, hist_request, hist_ping);
             match (done, closed) {
                 (true, false) => {
                 // normal keep-alive response
@@ -178,7 +193,6 @@ fn reset_slot(&mut self, idx: usize) {
 
                 (true, true) => {
                 // response complete but server closed (Connection: close)
-                    ///println!("✓ RESPONSE COMPLETE + CLOSED on conn {}", idx);
                     self.reset_slot(idx);
                     self.free(idx);
                     completed += 1;
@@ -205,7 +219,8 @@ fn reset_slot(&mut self, idx: usize) {
                 idx: usize, 
                 buf: &mut [u8], 
                 parser: fn(&[u8]) -> Option<(Vec<u8>, &[u8])>,
-                hist: &mut hdrhistogram::Histogram<u64>) -> (bool /*complete */, bool /* closed */) 
+                hist_request: &mut hdrhistogram::Histogram<u64>,
+                hist_ping: &mut hdrhistogram::Histogram<u64>) -> (bool /*complete */, bool /* closed */) 
     {
 
         let slot = &mut self.conns[idx];
@@ -253,7 +268,12 @@ fn reset_slot(&mut self, idx: usize) {
         }
         if response_complete {
             slot.set_recv_time();
-            hist.record(slot.recv_time.unwrap().duration_since(slot.send_time.unwrap()).as_millis() as u64).unwrap();
+            match slot.get_opcode().as_str() {
+                "request" => hist_request.record(slot.recv_time.unwrap().duration_since(slot.send_time.unwrap()).as_millis() as u64).unwrap(),
+                "ping" => hist_ping.record(slot.recv_time.unwrap().duration_since(slot.send_time.unwrap()).as_millis() as u64).unwrap(),
+                _ => (),
+            }
+            //hist.record(slot.recv_time.unwrap().duration_since(slot.send_time.unwrap()).as_millis() as u64).unwrap();
             /* 
             println!("PARSER: completed response on conn {} q->w latency {} microsec, request latency {}", 
                     idx,

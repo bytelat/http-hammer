@@ -1,11 +1,12 @@
-use std::sync::{Arc};
+use std::sync::{Arc, atomic::{AtomicBool}};
 use std::time::{Duration, Instant};
-use crossbeam_channel::{Sender, Receiver};
-use crate::types::{RuntimeSettings, MsgRequest, MsgResponse};
+use crossbeam_channel::{Sender};
+use crate::types::{RuntimeSettings, MsgRequest};
 
 pub fn start_injector_thread(
+    cont: Arc<AtomicBool>,
     req_sender: Vec<Sender<MsgRequest>>,
-    _resp_receiver: Vec<Receiver<MsgResponse>>,
+  //  _resp_receiver: Vec<Receiver<MsgResponse>>,
     //stats: Arc<RwLock<Stats>>,
     settings: Arc<RuntimeSettings>,
     //cli_opts: Arc<CliOptions>,
@@ -22,10 +23,14 @@ pub fn start_injector_thread(
         let num_workers = req_sender.len();
         let mut next_ping = Instant::now() + Duration::from_secs(1);
         loop {
+            if cont.load(std::sync::atomic::Ordering::Relaxed) == false {
+                println!("Injector: received shutdown signal, exiting");
+                return;
+            }
             // 1. Read current RPS (updated by UI)
             let rps = settings.rps();
 
-            // If RPS is zero, idle briefly
+            // If RPS is zero, idle briefly 
             if rps == 0 {
                 std::thread::sleep(Duration::from_millis(50));
                 continue;
@@ -40,7 +45,7 @@ pub fn start_injector_thread(
                 let _ = req_sender[ current % num_workers ].send(MsgRequest { 
                     opcode: "request".to_string(), 
                     body_index:current, 
-                    request_id: current,
+                    _request_id: current,
                     enqueue_time: Instant::now(),
                 });
                 current = (current + 1) % total;
@@ -56,7 +61,7 @@ pub fn start_injector_thread(
                     let _ = req_sender[n].send(MsgRequest {
                         opcode: "ping".to_string(),
                         body_index: 0,
-                        request_id: 0,
+                        _request_id: 0,
                         enqueue_time: Instant::now(),
                     });
                 }

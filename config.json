@@ -2,8 +2,14 @@
     "upstreams": [
        "localhost:8007" 
     ],
+    "routes": {
+            "request": "/v1/chat/completions",
+            "ping": "/ping"
+    },
     "upstream_path": "/v1/chat/completions",
-    "concurrency": 2,
+    "upstream_path_request": "/v1/chat/completions",
+    "upstream_path_ping": "/ping",
+    "concurrency": 3,
     "keep_alive": 100,
     "cli_refresh_interval_ms": 1000,
     "template": {

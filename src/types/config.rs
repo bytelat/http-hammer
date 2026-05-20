@@ -5,15 +5,23 @@ use serde::Deserialize;
 pub struct Config {
     pub upstreams: Vec<String>,
     pub concurrency: usize,
-    pub upstream_path: String,  
-    pub cli_refresh_interval_ms: u64,  
+    pub routes: Routes,
+    #[serde(default)]
+    //pub upstream_path: String,  
+    //pub cli_refresh_interval_ms: u64,  
     pub keep_alive: usize, // Number of open tcp connections to keep alive per upstream
     pub template: serde_json::Value, // Keep as Value for flexibility
     // template_str is computed later
     #[serde(default)]
     pub template_str: String, // Store original template string for injection
-    #[serde(default)]
-    pub upstream_url: Vec<String>,
+    //#[serde(default)]
+    //pub upstream_url: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Routes {
+    pub request: String,
+    pub ping: String,
 }
 
 impl Config {
