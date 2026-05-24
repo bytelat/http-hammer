@@ -11,6 +11,7 @@ pub struct WorkerStats {
 pub struct LocalStats {
     pub worker_id: usize,
 
+    pub free_conns: usize,
     // merged histogram from worker messages
     pub histogram: hdrhistogram::Histogram<u64>,
 
@@ -22,6 +23,32 @@ pub struct LocalStats {
     pub max: u64,   
 }
 
+#[derive(Default, Clone)]
+pub struct VllmMetrics {
+    pub running: f64,
+    pub waiting: f64,
+
+    pub kv_cache_frac: f64,
+    pub kv_cache_pct: f64,
+
+    pub prefix_hits: f64,
+    pub prefix_queries: f64,
+    pub prefix_hit_rate: f64,
+
+    pub prompt_tokens_total: f64,
+    pub gen_tokens_total: f64,
+
+    pub prompt_tps: f64,
+    pub gen_tps: f64,
+}
+
+pub struct PingStats {
+    pub histogram: hdrhistogram::Histogram<u64>,
+    pub p50: u64,
+    pub p90: u64,
+    pub p99: u64,
+    pub max: u64,
+}
 /* 
 #[derive(Debug, Clone)]
 pub struct Settings {

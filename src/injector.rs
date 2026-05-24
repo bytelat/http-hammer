@@ -57,6 +57,13 @@ pub fn start_injector_thread(
             // 3. Send one ping every second
             let now = Instant::now();
             if now >= next_ping {
+                let _ = req_sender[0].send(MsgRequest {
+                        opcode: "ping".to_string(),
+                        body_index: 0,
+                        _request_id: 0,
+                        enqueue_time: Instant::now(),
+                    });
+                    /* 
                 for n in 0..num_workers {
                     let _ = req_sender[n].send(MsgRequest {
                         opcode: "ping".to_string(),
@@ -64,7 +71,7 @@ pub fn start_injector_thread(
                         _request_id: 0,
                         enqueue_time: Instant::now(),
                     });
-                }
+                } */
                 next_ping = now + Duration::from_secs(1);
             }
              

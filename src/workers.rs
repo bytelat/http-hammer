@@ -5,7 +5,7 @@ use crossbeam_channel::Receiver;
 use std::io::{Write};
 //use ncurses::FALSE;
 use crate::types::worker::ConnPool;
-use crate::types::{MsgRequest, MsgStats, Routes, WorkerConfig};
+use crate::types::{MsgRequest, MsgStats, Routes, WorkerConfig, WorkerMsg, MsgBody};
 //use socket2::Socket;
 //use hdrhistogram::Histogram;
 
@@ -176,7 +176,7 @@ fn handle_message(
             }
         }
     } else {
-        println!("Worker {worker_id}: ALLOC FAILED — no free connections available");
+        //println!("Worker {worker_id}: ALLOC FAILED — no free connections available");
         return false;
     }
 }
@@ -278,10 +278,12 @@ pub fn worker_loop(worker_specific: WorkerConfig) {
                 .tx_stats_q
                 .send(MsgStats {
                     opcode: "worker_stats".to_string(),
-                    free_conns: pool.get_free_count(),
                     worker_id: worker_specific.worker_id,
-                    histogram_request: hist_request.clone(),
-                    histogram_ping: hist_ping.clone(),
+                    body: MsgBody::Worker(WorkerMsg {
+                        free_conns: pool.get_free_count(),
+                        histogram_request: hist_request.clone(),
+                        histogram_ping: hist_ping.clone(),
+                    })
                 })
                 .unwrap();
             hist_request.reset();

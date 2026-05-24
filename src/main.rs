@@ -1,11 +1,11 @@
 mod injector;
+mod metrics;
 mod types;
 mod ui;
 mod workers;
 
-use types::{
-    CliOptions, Config, MsgRequest, RuntimeSettings, WorkerConfig, WorkerStats,
-};
+use metrics::MetricsCollector;
+use types::{CliOptions, Config, MsgRequest, RuntimeSettings, WorkerConfig, WorkerStats};
 //use crate::types::config::{Config, CliOptions};
 //use crate::types::{Stats, Settings};
 
@@ -205,7 +205,8 @@ fn main() -> anyhow::Result<()> {
 
     let (tx_stats, rx_stats) = unbounded::<MsgStats>();
     let stats = init_stats(cfg.concurrency);
-
+  //  let (metrics_tx, metrics_rx) = std::sync::mpsc::channel();
+   // let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
     for worker_id in 0..cfg.concurrency {
         // One request channel per worker
         let (tx_req, rx_req) = unbounded::<MsgRequest>(); // unique channel for each worker
@@ -231,14 +232,22 @@ fn main() -> anyhow::Result<()> {
 
         handles.push(handle);
     }
+    let collector = MetricsCollector::new(
+        cfg.concurrency,
+        tx_stats.clone(),
+       // shutdown_rx,
+        "http://localhost:8007/metrics",
+    );
 
+    let metrics_thread = collector.start();
+      
     let ui_handle = ui::start_ui_thread(
         rx_stats,
         stats.clone(),
         settings.clone(),
         //cli_opts.clone(),
         Arc::clone(&cfg),
-    );
+    ); 
     let thread_cont = Arc::clone(&cont);
     let injector_handle = injector::start_injector_thread(
         thread_cont,
@@ -250,9 +259,12 @@ fn main() -> anyhow::Result<()> {
         http_requests.clone(),
     )?;
 
+     
     ui_handle.join().unwrap();
     cont.store(false, std::sync::atomic::Ordering::Relaxed); // signal injector to shutdown
     println!("Main thread: waiting for injector to shutdown...");
+    //let _ = shutdown_tx.send(());
+    
     injector_handle.join().unwrap();
 
     for tx in req_senders {
