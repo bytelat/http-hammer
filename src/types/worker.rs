@@ -269,18 +269,14 @@ fn reset_slot(&mut self, idx: usize) {
         if response_complete {
             slot.set_recv_time();
             match slot.get_opcode().as_str() {
-                "request" => hist_request.record(slot.recv_time.unwrap().duration_since(slot.send_time.unwrap()).as_millis() as u64).unwrap(),
-                "ping" => hist_ping.record(slot.recv_time.unwrap().duration_since(slot.send_time.unwrap()).as_millis() as u64).unwrap(),
+                "request" => { 
+                    hist_request.record(slot.recv_time.unwrap().duration_since(slot.send_time.unwrap()).as_millis() as u64).unwrap();
+                }
+                "ping" => {
+                    hist_ping.record(slot.recv_time.unwrap().duration_since(slot.send_time.unwrap()).as_millis() as u64).unwrap();
+                }
                 _ => (),
             }
-            //hist.record(slot.recv_time.unwrap().duration_since(slot.send_time.unwrap()).as_millis() as u64).unwrap();
-            /* 
-            println!("PARSER: completed response on conn {} q->w latency {} microsec, request latency {}", 
-                    idx,
-                    slot.send_time.unwrap().duration_since(slot.enqueue_time.unwrap()).as_micros(),
-                    slot.recv_time.unwrap().duration_since(slot.send_time.unwrap()).as_millis(),
-                    );
-                    */
         }
         (response_complete, closed)
     }

@@ -14,8 +14,7 @@ use std::{
 use crate::{
     metrics::VllmMetrics,
     types::{
-        Config, LocalStats, MsgBody, MsgStats, RuntimeSettings, WorkerMsg, WorkerStats,
-        stats::PingStats,
+        Config, LocalStats, MsgBody, MsgStats, RuntimeSettings, WorkerStats, stats::PingStats,
     },
 };
 use crossterm::{
@@ -27,7 +26,7 @@ use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Row, Sparkline, Table},
@@ -39,224 +38,7 @@ enum UiWindow {
     General,
     Workers,
 }
-/*
-fn draw_ui(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    local_stats: &[LocalStats],
-    worker_stats: &[Arc<WorkerStats>],
-    global_stats: &LocalStats,
-    p99_history: &[u64],
-    start_time: Instant,
-) {
-    let now = chrono::Local::now();
-    let uptime = start_time.elapsed().as_secs_f32();
 
-    // aggregate global counters
-    let g_sent_rps: u64 = worker_stats
-        .iter()
-        .map(|w| w.sent_rps.load(Ordering::Relaxed))
-        .sum();
-    let g_recv_rps: u64 = worker_stats
-        .iter()
-        .map(|w| w.recv_rps.load(Ordering::Relaxed))
-        .sum();
-    let g_ok: u64 = worker_stats
-        .iter()
-        .map(|w| w.total_ok.load(Ordering::Relaxed))
-        .sum();
-    let g_err: u64 = worker_stats
-        .iter()
-        .map(|w| w.total_err.load(Ordering::Relaxed))
-        .sum();
-
-    // choose a "max" for RPS gauge (tune as you like)
-    let rps_max = 10_000u64.max(g_sent_rps);
-    let rps_ratio = if rps_max == 0 {
-        0.0
-    } else {
-        g_sent_rps as f64 / rps_max as f64
-    };
-
-    terminal
-        .draw(|f| {
-            let size = f.size();
-
-            // top: header + controls
-            let main_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3),
-                    Constraint::Length(5),
-                    Constraint::Length(5),
-                    Constraint::Min(10),
-                    Constraint::Length(7),
-                ])
-                .split(size);
-
-            // HEADER
-            let header_block = Block::default().borders(Borders::ALL).title(Span::styled(
-                format!(
-                    "Time: {}   Uptime: {:.1}s   Controls: [q] quit  [+] inc  [-] dec",
-                    now.format("%H:%M:%S"),
-                    uptime
-                ),
-                Style::default().fg(Color::Cyan),
-            ));
-            f.render_widget(header_block, main_chunks[0]);
-
-            // RPS GAUGE
-            let gauge = Gauge::default()
-                .block(Block::default().borders(Borders::ALL).title("RPS Load"))
-                .gauge_style(
-                    Style::default()
-                        .fg(Color::Green)
-                        .bg(Color::Black)
-                        .add_modifier(ratatui::style::Modifier::BOLD),
-                )
-                .ratio(rps_ratio)
-                .label(Span::styled(
-                    format!("{} req/s", g_sent_rps),
-                    Style::default().fg(Color::White),
-                ));
-            f.render_widget(gauge, main_chunks[1]);
-
-            // LATENCY SPARKLINE (p99)
-            let spark_data: Vec<u64> = if p99_history.is_empty() {
-                vec![0]
-            } else {
-                p99_history.to_vec()
-            };
-
-            let spark_color = match global_stats.p99 {
-                v if v < 50_000 => Color::Green,   // < 50ms
-                v if v < 150_000 => Color::Yellow, // 50–150ms
-                _ => Color::Red,                   // > 150ms
-            };
-
-            let spark = Sparkline::default()
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Latency p99 Trend (µs)"),
-                )
-                .data(&spark_data)
-                .style(Style::default().fg(spark_color))
-                .bar_set(symbols::bar::NINE_LEVELS);
-            f.render_widget(spark, main_chunks[2]);
-
-            // PER-WORKER + GLOBAL tables stacked
-            let table_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(7), Constraint::Length(7)])
-                .split(main_chunks[3]);
-
-            // PER-WORKER TABLE
-            let worker_rows: Vec<Row> = local_stats
-                .iter()
-                .enumerate()
-                .map(|(i, ls)| {
-                    let ws = &worker_stats[i];
-
-                    let p99_color = match ls.p99 {
-                        v if v < 50_000 => Color::Green,
-                        v if v < 150_000 => Color::Yellow,
-                        _ => Color::Red,
-                    };
-
-                    Row::new(vec![
-                        ls.worker_id.to_string(),
-                        ls.p50.to_string(),
-                        ls.p55.to_string(),
-                        ls.p90.to_string(),
-                        Span::styled(ls.p99.to_string(), Style::default().fg(p99_color))
-                            .to_string(),
-                        ls.max.to_string(),
-                        ws.sent_rps.load(Ordering::Relaxed).to_string(),
-                        ws.recv_rps.load(Ordering::Relaxed).to_string(),
-                        ws.total_ok.load(Ordering::Relaxed).to_string(),
-                        ws.total_err.load(Ordering::Relaxed).to_string(),
-                    ])
-                })
-                .collect();
-
-            let worker_table = Table::new(
-                worker_rows,
-                [
-                    Constraint::Length(6),
-                    Constraint::Length(8),
-                    Constraint::Length(8),
-                    Constraint::Length(8),
-                    Constraint::Length(10),
-                    Constraint::Length(10),
-                    Constraint::Length(10),
-                    Constraint::Length(10),
-                    Constraint::Length(12),
-                    Constraint::Length(10),
-                ],
-            )
-            .header(
-                Row::new(vec![
-                    "WID", "p50", "p55", "p90", "p99(µs)", "max(µs)", "sent/s", "recv/s", "OK",
-                    "ERR",
-                ])
-                .style(Style::default().fg(Color::Cyan)),
-            )
-            .block(
-                Block::default()
-                    .title("Per-Worker Latency & Counters")
-                    .borders(Borders::ALL),
-            )
-            .style(Style::default().fg(Color::White));
-            f.render_widget(worker_table, table_chunks[0]);
-
-            // GLOBAL TABLE
-            let global_row = Row::new(vec![
-                global_stats.p50.to_string(),
-                global_stats.p55.to_string(),
-                global_stats.p90.to_string(),
-                global_stats.p99.to_string(),
-                global_stats.max.to_string(),
-                g_sent_rps.to_string(),
-                g_recv_rps.to_string(),
-                g_ok.to_string(),
-                g_err.to_string(),
-            ]);
-
-            let global_table = Table::new(
-                vec![global_row],
-                [
-                    Constraint::Length(8),
-                    Constraint::Length(8),
-                    Constraint::Length(8),
-                    Constraint::Length(10),
-                    Constraint::Length(10),
-                    Constraint::Length(10),
-                    Constraint::Length(10),
-                    Constraint::Length(12),
-                    Constraint::Length(12),
-                ],
-            )
-            .header(
-                Row::new(vec![
-                    "p50", "p55", "p90", "p99(µs)", "max(µs)", "sent/s", "recv/s", "OK", "ERR",
-                ])
-                .style(Style::default().fg(Color::Cyan)),
-            )
-            .block(
-                Block::default()
-                    .title("Global Latency & Counters")
-                    .borders(Borders::ALL),
-            );
-            f.render_widget(global_table, table_chunks[1]);
-
-            // FOOTER (reserved for future controls/help)
-            let footer_block = Block::default()
-                .borders(Borders::ALL)
-                .title("Footer / Extra Controls (reserved)");
-            f.render_widget(footer_block, main_chunks[4]);
-        })
-        .unwrap();
-} */
 fn draw_general_window(
     f: &mut Frame,
     local_stats: &[LocalStats],
@@ -318,7 +100,7 @@ fn draw_general_window(
     // ---- TOP BAR ----
     let header = Block::default().borders(Borders::ALL).title(Span::styled(
         format!(
-            "Time: {}   Uptime: {:.1}s   [g] General  [w] Workers  [+/-] RPS  [q] Quit",
+            "Time: {}   Uptime: {:.1}s   [g] General  [w] Workers  [+/-] RPS  [r] Reset Counters  [q] Quit",
             now.format("%H:%M:%S"),
             uptime
         ),
@@ -342,6 +124,7 @@ fn draw_general_window(
 
     // ---- LATENCY TABLE ----
     let latency_rows = vec![Row::new(vec![
+        format!("{:.3}", global_stats.avg as f64),
         global_stats.p50.to_string(),
         global_stats.p55.to_string(),
         global_stats.p90.to_string(),
@@ -355,12 +138,13 @@ fn draw_general_window(
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(10),
+            Constraint::Length(10),
             Constraint::Length(12),
             Constraint::Length(12),
         ],
     )
     .header(
-        Row::new(vec!["p50", "p55", "p90", "p99(µs)", "max(µs)"])
+        Row::new(vec!["avg", "p50", "p55", "p90", "p99(ms)", "max(ms)"])
             .style(Style::default().fg(Color::Cyan)),
     )
     .block(
@@ -372,26 +156,40 @@ fn draw_general_window(
     f.render_widget(latency_table, chunks[2]);
 
     // ---- PING STATS ----
-    let ping_block = Paragraph::new(format!(
-        "p50: {} µs\n\
-     p90: {} µs\n\
-     p99: {} µs\n\
-     max: {} µs",
-        ping_stats.p50, ping_stats.p90, ping_stats.p99, ping_stats.max,
-    ))
+    let ping_rows = vec![Row::new(vec![
+        format!("{:.3}", ping_stats.avg as f64),
+        ping_stats.p50.to_string(),
+        ping_stats.p90.to_string(),
+        ping_stats.p99.to_string(),
+        ping_stats.max.to_string(),
+    ])];
+
+    let ping_table = Table::new(
+        ping_rows,
+        [
+            Constraint::Length(10), // avg
+            Constraint::Length(10), // p50
+            Constraint::Length(10), // p90
+            Constraint::Length(10), // p99
+            Constraint::Length(10), // max
+        ],
+    )
+    .header(
+        Row::new(vec!["avg", "p50", "p90", "p99", "max"]).style(Style::default().fg(Color::Cyan)),
+    )
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title("Ping (FastAPI)"),
+            .title("Ping (API Server)"),
     );
 
-    f.render_widget(ping_block, chunks[3]);
+    f.render_widget(ping_table, chunks[3]);
 
     let ping_spark = Sparkline::default()
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Ping Trend (µs)"),
+                .title("Ping Trend (ms)"),
         )
         .data(&ping_history)
         .style(Style::default().fg(Color::Yellow))
@@ -441,7 +239,7 @@ fn draw_general_window(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("p99 Trend (µs)"),
+                .title("p99 Trend (ms)"),
         )
         .data(&spark_data)
         .style(Style::default().fg(spark_color))
@@ -501,12 +299,53 @@ fn draw_worker_window(
             ls.p90.to_string(),
             Span::styled(ls.p99.to_string(), Style::default().fg(p99_color)).to_string(),
             ls.max.to_string(),
+            format!("{:.3}", ls.avg as f64),
             ws.sent_rps.load(Ordering::Relaxed).to_string(),
             ws.recv_rps.load(Ordering::Relaxed).to_string(),
             ws.total_ok.load(Ordering::Relaxed).to_string(),
             ws.total_err.load(Ordering::Relaxed).to_string(),
         ]));
     }
+
+    // ---- TOTAL AGGREGATION ----
+    let mut total_free = 0;
+    let mut total_sent = 0;
+    let mut total_recv = 0;
+    let mut total_ok = 0;
+    let mut total_err = 0;
+
+    for (i, ls) in local_stats.iter().enumerate() {
+        let ws = &worker_stats[i];
+
+        total_free += ls.free_conns;
+        total_sent += ws.sent_rps.load(Ordering::Relaxed);
+        total_recv += ws.recv_rps.load(Ordering::Relaxed);
+        total_ok += ws.total_ok.load(Ordering::Relaxed);
+        total_err += ws.total_err.load(Ordering::Relaxed);
+    }
+
+    // ---- TOTAL ROW ----
+    let total_row = Row::new(vec![
+        "TOTAL".into(),
+        total_free.to_string(),
+        global_stats.p50.to_string(),
+        global_stats.p55.to_string(),
+        global_stats.p90.to_string(),
+        global_stats.p99.to_string(),
+        global_stats.max.to_string(),
+        format!("{:.3}", global_stats.avg as f64),
+        total_sent.to_string(),
+        total_recv.to_string(),
+        total_ok.to_string(),
+        total_err.to_string(),
+    ])
+    .style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    rows.push(total_row);
 
     let table = Table::new(
         rows,
@@ -518,6 +357,7 @@ fn draw_worker_window(
             Constraint::Length(10), // p90
             Constraint::Length(12), // p99
             Constraint::Length(12), // max
+            Constraint::Length(10), // avg
             Constraint::Length(10), // sent/s
             Constraint::Length(10), // recv/s
             Constraint::Length(12), // OK
@@ -526,8 +366,8 @@ fn draw_worker_window(
     )
     .header(
         Row::new(vec![
-            "WID", "free", "p50", "p55", "p90", "p99(µs)", "max(µs)", "sent/s", "recv/s", "OK",
-            "ERR",
+            "WID", "free", "p50", "p55", "p90", "p99(ms)", "max(ms)", "avg(ms)", "sent/s",
+            "recv/s", "OK", "ERR",
         ])
         .style(Style::default().fg(Color::Cyan)),
     )
@@ -586,6 +426,7 @@ pub fn init_local_stats(num_workers: usize) -> (Vec<LocalStats>, LocalStats, Pin
             p90: 0,
             p99: 0,
             max: 0,
+            avg: 0.0,
         })
         .collect::<Vec<_>>();
 
@@ -598,6 +439,7 @@ pub fn init_local_stats(num_workers: usize) -> (Vec<LocalStats>, LocalStats, Pin
         p90: 0,
         p99: 0,
         max: 0,
+        avg: 0.0,
     };
 
     let ping_stats = PingStats {
@@ -606,8 +448,62 @@ pub fn init_local_stats(num_workers: usize) -> (Vec<LocalStats>, LocalStats, Pin
         p90: 0,
         p99: 0,
         max: 0,
+        avg: 0.0,
     };
     (local_stats, total_stats, ping_stats)
+}
+
+fn reset_all_counters(
+    local_stats: &mut [LocalStats],
+    global_stats: &mut LocalStats,
+    ping_stats: &mut PingStats,
+    p99_history: &mut Vec<u64>,
+    ping_history: &mut Vec<u64>,
+    worker_stats: &[Arc<WorkerStats>],
+) {
+    // Reset worker stats
+    for ls in local_stats.iter_mut() {
+        ls.histogram.reset();
+        ls.p50 = 0;
+        ls.p55 = 0;
+        ls.p90 = 0;
+        ls.p99 = 0;
+        ls.avg = 0.0;
+        ls.max = 0;
+    }
+
+    // Reset global stats
+    global_stats.histogram.reset();
+    global_stats.p50 = 0;
+    global_stats.p55 = 0;
+    global_stats.p90 = 0;
+    global_stats.p99 = 0;
+    global_stats.avg = 0.0;
+    global_stats.max = 0;
+
+    // Reset ping stats
+    ping_stats.histogram.reset();
+    ping_stats.p50 = 0;
+    ping_stats.p90 = 0;
+    ping_stats.p99 = 0;
+    ping_stats.max = 0;
+    ping_stats.avg = 0.0;
+
+    // Clear history buffers
+    p99_history.clear();
+    ping_history.clear();
+
+    // ⭐ Reset all atomic counters
+    for ws in worker_stats {
+        ws.sent_rps.store(0, Ordering::Relaxed);
+        ws.recv_rps.store(0, Ordering::Relaxed);
+        ws.total_sent.store(0, Ordering::Relaxed);
+        ws.total_ok.store(0, Ordering::Relaxed);
+        ws.total_err.store(0, Ordering::Relaxed);
+        ws.sent_rps.store(0, Ordering::Relaxed);
+        ws.recv_rps.store(0, Ordering::Relaxed);
+        // Add more as needed
+    }
 }
 
 pub fn run_ui(
@@ -632,7 +528,7 @@ pub fn run_ui(
     execute!(stdout, EnterAlternateScreen).unwrap();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).unwrap();
-
+    let alpha = 0.9;
     terminal.clear().unwrap();
 
     let target_frame_time = Duration::from_millis(33); // ~30 FPS
@@ -648,11 +544,16 @@ pub fn run_ui(
                     let ls = &mut local_stats[id];
                     ls.free_conns = wm.free_conns;
                     ls.histogram = wm.histogram_request.clone();
-                    ls.histogram = wm.histogram_request.clone();
                     ls.p50 = ls.histogram.value_at_quantile(0.50);
                     ls.p55 = ls.histogram.value_at_quantile(0.55);
                     ls.p90 = ls.histogram.value_at_quantile(0.90);
                     ls.p99 = ls.histogram.value_at_quantile(0.99);
+                    let new_avg = ls.histogram.mean() as f64;
+                    ls.avg = if ls.avg == 0 as f64 {
+                        new_avg as f64
+                    } else {
+                        (ls.avg as f64 * alpha + new_avg * (1.0 - alpha)) as f64
+                    };
                     ls.max = ls.histogram.max();
 
                     global_stats.histogram.add(&wm.histogram_request).unwrap();
@@ -660,6 +561,7 @@ pub fn run_ui(
                     global_stats.p55 = global_stats.histogram.value_at_quantile(0.55);
                     global_stats.p90 = global_stats.histogram.value_at_quantile(0.90);
                     global_stats.p99 = global_stats.histogram.value_at_quantile(0.99);
+                    global_stats.avg = ls.avg;
                     global_stats.max = global_stats.histogram.max();
 
                     p99_history.push(global_stats.p99);
@@ -672,7 +574,15 @@ pub fn run_ui(
                         ping_stats.p90 = ping_stats.histogram.value_at_quantile(0.90);
                         ping_stats.p99 = ping_stats.histogram.value_at_quantile(0.99);
                         ping_stats.max = ping_stats.histogram.max();
+                        
+                        let new_avg = ping_stats.histogram.mean() as f64;
 
+                        ping_stats.avg = if ping_stats.avg == 0.0 {
+                            new_avg
+                        } else {
+                            ping_stats.avg * alpha + new_avg * (1.0 - alpha)
+                        };
+                        //ping_stats.avg = ping_stats.histogram.mean() as u64;
                         // NEW: update ping sparkline history
                         ping_history.push(ping_stats.p99);
                         if ping_history.len() > 120 {
@@ -706,6 +616,16 @@ pub fn run_ui(
                         KeyCode::Char('-') | KeyCode::Char('_') => settings.dec_rps(1),
                         KeyCode::Char('g') => current_window = UiWindow::General,
                         KeyCode::Char('w') => current_window = UiWindow::Workers,
+                        KeyCode::Char('r') => {
+                            reset_all_counters(
+                                &mut local_stats,
+                                &mut global_stats,
+                                &mut ping_stats,
+                                &mut p99_history,
+                                &mut ping_history,
+                                &worker_stats,
+                            );
+                        }
                         _ => {}
                     }
                 }

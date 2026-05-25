@@ -16,6 +16,7 @@ pub struct _MsgResponse {
 }
 
 pub struct MsgStats {
+    #[allow(dead_code)]
     pub opcode: String,
     pub worker_id: usize,
     pub body: MsgBody,   

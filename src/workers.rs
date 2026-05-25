@@ -274,7 +274,7 @@ pub fn worker_loop(worker_specific: WorkerConfig) {
                 .stats
                 .recv_rps
                 .store(recv_count, std::sync::atomic::Ordering::Relaxed);
-            worker_specific
+            if worker_specific
                 .tx_stats_q
                 .send(MsgStats {
                     opcode: "worker_stats".to_string(),
@@ -284,8 +284,9 @@ pub fn worker_loop(worker_specific: WorkerConfig) {
                         histogram_request: hist_request.clone(),
                         histogram_ping: hist_ping.clone(),
                     })
-                })
-                .unwrap();
+                }).is_err() {
+                    return;
+                }
             hist_request.reset();
             hist_ping.reset();
             /*

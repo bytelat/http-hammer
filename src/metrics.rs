@@ -1,7 +1,8 @@
-use crate::types::msgs::{MsgStats, MsgBody, MetricsMsg};
+use crate::types::msgs::{MetricsMsg, MsgBody, MsgStats};
 //use std::sync::mpsc::{Receiver, Sender};
+use crossbeam_channel::Sender;
+use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Duration;
-use crossbeam_channel::{Sender};
 
 pub struct MetricsCollector {
     worker_id: usize,
@@ -9,6 +10,7 @@ pub struct MetricsCollector {
     //shutdown_rx: Receiver<()>,
     route: String,
     interval: Duration,
+    cont: Arc<AtomicBool>,
 }
 
 impl MetricsCollector {
@@ -17,6 +19,7 @@ impl MetricsCollector {
         stats_tx: Sender<MsgStats>,
         //shutdown_rx: Receiver<()>,
         route: impl Into<String>,
+        cont: Arc<AtomicBool>,
     ) -> Self {
         Self {
             worker_id,
@@ -24,6 +27,7 @@ impl MetricsCollector {
             //shutdown_rx,
             route: route.into(),
             interval: Duration::from_secs(1),
+            cont,
         }
     }
 
@@ -40,6 +44,10 @@ impl MetricsCollector {
 
             rt.block_on(async move {
                 loop {
+                    if self.cont.load(std::sync::atomic::Ordering::Relaxed) == false {
+                        println!("metrics: received shutdown signal, exiting");
+                        return;
+                    }
                     if let Ok(resp) = reqwest::get(&route).await {
                         if let Ok(text) = resp.text().await {
                             let mut m = parse_vllm_metrics(&text);
@@ -52,36 +60,27 @@ impl MetricsCollector {
                             last_prompt_tokens = m.prompt_tokens_total;
                             last_gen_tokens = m.gen_tokens_total;
                             last_time = now;
-                            self.stats_tx.send(MsgStats {
+                            if self.stats_tx
+                                .send(MsgStats {
                                     opcode: "metrics_stats".to_string(),
                                     worker_id: self.worker_id,
                                     body: MsgBody::Metrics(MetricsMsg {
-                                            running: m.running,
-                                            waiting: m.waiting,
-                                            kv_cache_frac: m.kv_cache_frac,
-                                            kv_cache_pct: m.kv_cache_pct,
-                                            prefix_hits: m.prefix_hits,
-                                            prefix_queries: m.prefix_queries,
-                                            prefix_hit_rate: m.prefix_hit_rate,
-                                            prompt_tokens_total: m.prompt_tokens_total,
-                                            gen_tokens_total: m.gen_tokens_total,
-                                            prompt_tps: m.prompt_tps,
-                                            gen_tps: m.gen_tps,
-                                        })
-                            }).unwrap();
-                            /* 
-                            println!(
-                                "Avg prompt throughput: {:.1} tokens/s, \
-                             Avg generation throughput: {:.1} tokens/s, \
-                             Running: {} reqs, Waiting: {} reqs, \
-                             GPU KV cache usage: {:.1}%, Prefix cache hit rate: {:.1}%",
-                                m.prompt_tps,
-                                m.gen_tps,
-                                m.running,
-                                m.waiting,
-                                m.kv_cache_pct,
-                                m.prefix_hit_rate,
-                            );*/
+                                        running: m.running,
+                                        waiting: m.waiting,
+                                        kv_cache_frac: m.kv_cache_frac,
+                                        kv_cache_pct: m.kv_cache_pct,
+                                        prefix_hits: m.prefix_hits,
+                                        prefix_queries: m.prefix_queries,
+                                        prefix_hit_rate: m.prefix_hit_rate,
+                                        prompt_tokens_total: m.prompt_tokens_total,
+                                        gen_tokens_total: m.gen_tokens_total,
+                                        prompt_tps: m.prompt_tps,
+                                        gen_tps: m.gen_tps,
+                                    }),
+                                }).is_err() {
+                                    return; 
+                                }
+                                
                         }
                     }
 

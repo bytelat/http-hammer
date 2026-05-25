@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64};
+use std::sync::atomic::AtomicU64;
 
 #[repr(align(64))]
 pub struct WorkerStats {
@@ -20,9 +20,10 @@ pub struct LocalStats {
     pub p55: u64,
     pub p90: u64,
     pub p99: u64,
-    pub max: u64,   
+    pub max: u64,
+    pub avg: f64, // <-- NEW
 }
-
+#[allow(dead_code)]
 #[derive(Default, Clone)]
 pub struct VllmMetrics {
     pub running: f64,
@@ -48,8 +49,10 @@ pub struct PingStats {
     pub p90: u64,
     pub p99: u64,
     pub max: u64,
+    pub avg: f64, // <-- NEW
+   // pub ewma_avg: f64,
 }
-/* 
+/*
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub rps: usize,

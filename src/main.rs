@@ -213,9 +213,7 @@ fn main() -> anyhow::Result<()> {
         req_senders.push(tx_req);
 
         // One response channel per worker
-        //let (_tx_resp, rx_resp) = unbounded::<MsgResponse>();
-        //resp_receivers.push(rx_resp);
-        //let http_requests = http_requests.clone();
+        
 
         let worker_specific = WorkerConfig {
             worker_id: worker_id,
@@ -237,6 +235,7 @@ fn main() -> anyhow::Result<()> {
         tx_stats.clone(),
        // shutdown_rx,
         "http://localhost:8007/metrics",
+        Arc::clone(&cont),
     );
 
     let metrics_thread = collector.start();
@@ -266,7 +265,8 @@ fn main() -> anyhow::Result<()> {
     //let _ = shutdown_tx.send(());
     
     injector_handle.join().unwrap();
-
+    metrics_thread.join().unwrap();
+    
     for tx in req_senders {
         tx.send(MsgRequest {
             opcode: "shutdown".to_string(),
