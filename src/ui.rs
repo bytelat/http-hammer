@@ -38,6 +38,17 @@ enum UiWindow {
     General,
     Workers,
 }
+fn fmt_num(n: f64) -> String {
+    if n >= 1_000_000_000.0 {
+        format!("{:.2}B", n / 1_000_000_000.0)
+    } else if n >= 1_000_000.0 {
+        format!("{:.2}M", n / 1_000_000.0)
+    } else if n >= 1_000.0 {
+        format!("{:.2}K", n / 1_000.0)
+    } else {
+        format!("{:.0}", n)
+    }
+}
 
 fn draw_general_window(
     f: &mut Frame,
@@ -198,28 +209,70 @@ fn draw_general_window(
     f.render_widget(ping_spark, chunks[4]);
 
     // ---- vLLM METRICS ----
+    let run = format!("{:>14}", vllm.running);
+    let wait = format!("{:>14}", vllm.waiting);
+
+    let kv = format!("{:>14}", format!("{:.1}%", vllm.kv_cache_pct));
+    let prefix = format!("{:>14}", format!("{:.1}%", vllm.prefix_hit_rate));
+
+    let ptok = format!("{:>14}", fmt_num(vllm.prompt_tokens_total as f64));
+    let gtok = format!("{:>14}", fmt_num(vllm.gen_tokens_total as f64));
+
+    let ptps = format!("{:>14}", fmt_num(vllm.prompt_tps));
+    let gtps = format!("{:>14}", fmt_num(vllm.gen_tps));
+
+    let ttft = format!("{:>14}", format!("{:.3}s", vllm.ttft_avg));
+    let e2e = format!("{:>14}", format!("{:.3}s", vllm.e2e_avg));
+
     let vllm_text = Paragraph::new(format!(
-        "Running: {:.0}\n\
-         Waiting: {:.0}\n\
-         KV Cache: {:.2} frac  ({:.1}%)\n\
-         Prefix Cache: hits {:.0} / {:.0}  ({:.1}%)\n\
-         Prompt Tokens: {:.0}\n\
-         Gen Tokens: {:.0}\n\
-         Prompt TPS: {:.1}\n\
-         Gen TPS: {:.1}",
-        vllm.running,
-        vllm.waiting,
-        vllm.kv_cache_frac,
-        vllm.kv_cache_pct,
-        vllm.prefix_hits,
-        vllm.prefix_queries,
-        vllm.prefix_hit_rate,
-        vllm.prompt_tokens_total,
-        vllm.gen_tokens_total,
-        vllm.prompt_tps,
-        vllm.gen_tps,
+        "{:<14} {}      {:<14} {}\n\
+     {:<14} {}      {:<14} {}\n\
+     {:<14} {}      {:<14} {}\n\
+     {:<14} {}      {:<14} {}\n\
+     {:<14} {}      {:<14} {}",
+        "Running:",
+        run,
+        "Waiting:",
+        wait,
+        "KV Cache:",
+        kv,
+        "Prefix Hit:",
+        prefix,
+        "PromptTok:",
+        ptok,
+        "GenTok:",
+        gtok,
+        "PromptTPS:",
+        ptps,
+        "GenTPS:",
+        gtps,
+        "TTFT(avg):",
+        ttft,
+        "E2E(avg):",
+        e2e,
     ))
     .block(Block::default().borders(Borders::ALL).title("vLLM Metrics"));
+
+    /*
+        let vllm_text = Paragraph::new(format!(
+            "Running:        {:>10}    Waiting:        {:>10}\n\
+             KV Cache:       {:>10.1}%   Prefix Hit:     {:>10.1}%\n\
+             Prompt Tokens:  {:>10}    Gen Tokens:     {:>10}\n\
+             Prompt TPS:     {:>10.1}   Gen TPS:        {:>10.1}\n\
+             TTFT (avg):     {:>10.3}s  E2E (avg):      {:>10.3}s",
+            vllm.running,
+            vllm.waiting,
+            vllm.kv_cache_pct,
+            vllm.prefix_hit_rate,
+            vllm.prompt_tokens_total,
+            vllm.gen_tokens_total,
+            vllm.prompt_tps,
+            vllm.gen_tps,
+            vllm.ttft_avg,
+            vllm.e2e_avg,
+        ))
+        .block(Block::default().borders(Borders::ALL).title("vLLM Metrics"));
+    */
     f.render_widget(vllm_text, chunks[5]);
 
     // ---- P99 SPARKLINE ----
@@ -533,7 +586,7 @@ pub fn run_ui(
 
     let target_frame_time = Duration::from_millis(33); // ~30 FPS
     let mut last_frame = Instant::now();
-
+    let mut last_global_reset = Instant::now();
     loop {
         // 1. Drain all stats messages immediately (non-blocking)
         while let Ok(msg) = rx.try_recv() {
@@ -574,7 +627,7 @@ pub fn run_ui(
                         ping_stats.p90 = ping_stats.histogram.value_at_quantile(0.90);
                         ping_stats.p99 = ping_stats.histogram.value_at_quantile(0.99);
                         ping_stats.max = ping_stats.histogram.max();
-                        
+
                         let new_avg = ping_stats.histogram.mean() as f64;
 
                         ping_stats.avg = if ping_stats.avg == 0.0 {
@@ -602,6 +655,8 @@ pub fn run_ui(
                     vllm_metrics.gen_tokens_total = mm.gen_tokens_total;
                     vllm_metrics.prompt_tps = mm.prompt_tps;
                     vllm_metrics.gen_tps = mm.gen_tps;
+                    vllm_metrics.ttft_avg = mm.ttft_avg;
+                    vllm_metrics.e2e_avg = mm.e2e_avg;
                 }
             }
         }
@@ -647,6 +702,19 @@ pub fn run_ui(
                 &ping_history,
             );
             last_frame = Instant::now();
+        }
+        // Reset global stats once per second
+        if last_global_reset.elapsed().as_secs() >= 1 {
+            global_stats.histogram.reset();
+            /*
+            global_stats.p50 = 0;
+            global_stats.p55 = 0;
+            global_stats.p90 = 0;
+            global_stats.p99 = 0;
+            global_stats.max = 0;
+            global_stats.avg = 0.0; // because you're using EWMA f64 now
+            */
+            last_global_reset = Instant::now();
         }
 
         // 4. Tiny sleep to avoid 100% CPU
