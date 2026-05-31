@@ -4,17 +4,16 @@
     ],
     "routes": {
             "request": "/v1/chat/completions",
-            "ping": "/ping"
+            "ping": "/ping",
+            "metrics": "/metrics"
     },
-    "upstream_path": "/v1/chat/completions",
-    "upstream_path_request": "/v1/chat/completions",
-    "upstream_path_ping": "/ping",
+    "log_level": "info",
     "concurrency": 1,
     "keep_alive": 300,
     "cli_refresh_interval_ms": 1000,
     "template": {
         "use_beam_search": true,
-         "n": 10,
+         "n": 128,
          "temperature": 0.5,
          "ignore_eos": false,
          "length_penalty": 1.0,

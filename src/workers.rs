@@ -2,10 +2,11 @@
 use std::time::Duration;
 //use std::collections::HashMap;
 use crossbeam_channel::Receiver;
-use std::io::{Write};
+use std::io::Write;
 //use ncurses::FALSE;
 use crate::types::worker::ConnPool;
-use crate::types::{MsgRequest, MsgStats, Routes, WorkerConfig, WorkerMsg, MsgBody};
+use crate::types::{MsgBody, MsgRequest, MsgStats, Routes, WorkerConfig, WorkerMsg};
+use log::{debug, error, info, trace};
 //use socket2::Socket;
 //use hdrhistogram::Histogram;
 
@@ -33,15 +34,15 @@ pub fn parse_http_response(buf: &[u8]) -> Option<(Vec<u8>, &[u8])> {
     let body_len = buf.len().saturating_sub(body_start);
 
     // DEBUG
-    /*
-    println!(
+    debug!(
         "PARSER DEBUG: total={} header_end={} body_start={} body_len={} content_length={}",
         buf.len(),
         header_end,
         body_start,
         body_len,
         content_length
-    );*/
+    );
+   
 
     // 5. Not enough body yet → incomplete
     if body_len < content_length {
@@ -151,7 +152,7 @@ fn handle_message(
                 handle_msg_ping(worker_id, req, &routs.ping, slot.get_upstream())
             }
             _ => {
-                println!("Worker {worker_id}: unknown opcode {}", req.opcode);
+                error!("Worker {worker_id}: unknown opcode {}", req.opcode);
                 pool.free(idx); // free the slot if we won't use it
                 return false;
             }
@@ -166,7 +167,7 @@ fn handle_message(
                 return true;
             }
             Err(e) => {
-                println!(
+                error!(
                     "Worker {worker_id}: failed to send request to {}: {}",
                     slot.get_upstream(),
                     e
@@ -183,7 +184,7 @@ fn handle_message(
 
 pub fn worker_loop(worker_specific: WorkerConfig) {
     //println!("Worker {} started with upstreams: {:?}", worker_specific.worker_id, worker_specific.cfg.upstreams);
-
+    info!("Worker {} started with upstreams: {:?}", worker_specific.worker_id, worker_specific.cfg.upstreams);
     // Build epoll-based connection pool
     let mut pool = ConnPool::new(
         &worker_specific.cfg.upstreams,
@@ -216,10 +217,7 @@ pub fn worker_loop(worker_specific: WorkerConfig) {
         if let Some(req) = &current_req {
             match req.opcode.as_str() {
                 "shutdown" => {
-                    println!(
-                        "Worker {}: received shutdown signal, exiting",
-                        worker_specific.worker_id
-                    );
+                    info!("Worker {}: received shutdown signal, exiting", worker_specific.worker_id);
                     return;
                 }
                 _ => {
@@ -283,21 +281,22 @@ pub fn worker_loop(worker_specific: WorkerConfig) {
                         free_conns: pool.get_free_count(),
                         histogram_request: hist_request.clone(),
                         histogram_ping: hist_ping.clone(),
-                    })
-                }).is_err() {
-                    return;
-                }
+                    }),
+                })
+                .is_err()
+            {
+                return;
+            }
             hist_request.reset();
             hist_ping.reset();
-            /*
-            println!(
-                "Worker {} send_rate={} recv_rate={} free={} time_until_poll={} ms",
+            
+            trace!(
+                "Worker {} send_rate={} recv_rate={} free={}",
                 worker_specific.worker_id,
                 sent_count,
                 recv_count,
-                pool.get_free_count(),
-                time_until_poll.as_millis()
-            );*/
+                pool.get_free_count()
+            );
             sent_count = 0;
             recv_count = 0;
             last_print = std::time::Instant::now();

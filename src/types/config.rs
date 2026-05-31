@@ -6,6 +6,7 @@ pub struct Config {
     pub upstreams: Vec<String>,
     pub concurrency: usize,
     pub routes: Routes,
+    pub log_level: String,
     #[serde(default)]
     //pub upstream_path: String,  
     //pub cli_refresh_interval_ms: u64,  
@@ -22,6 +23,7 @@ pub struct Config {
 pub struct Routes {
     pub request: String,
     pub ping: String,
+    pub metrics: String,
 }
 
 impl Config {

@@ -60,7 +60,8 @@ impl MetricsCollector {
                             last_prompt_tokens = m.prompt_tokens_total;
                             last_gen_tokens = m.gen_tokens_total;
                             last_time = now;
-                            if self.stats_tx
+                            if self
+                                .stats_tx
                                 .send(MsgStats {
                                     opcode: "metrics_stats".to_string(),
                                     worker_id: self.worker_id,
@@ -76,11 +77,14 @@ impl MetricsCollector {
                                         gen_tokens_total: m.gen_tokens_total,
                                         prompt_tps: m.prompt_tps,
                                         gen_tps: m.gen_tps,
+                                        ttft_avg: m.ttft_avg,
+                                        e2e_avg: m.e2e_avg,
                                     }),
-                                }).is_err() {
-                                    return; 
-                                }
-                                
+                                })
+                                .is_err()
+                            {
+                                return;
+                            }
                         }
                     }
 
@@ -111,6 +115,14 @@ pub struct VllmMetrics {
 
     pub prompt_tps: f64,
     pub gen_tps: f64,
+
+    pub ttft_sum: f64,
+    pub ttft_count: f64,
+    pub ttft_avg: f64,
+
+    pub e2e_sum: f64,
+    pub e2e_count: f64,
+    pub e2e_avg: f64,
 }
 
 impl VllmMetrics {
@@ -136,6 +148,14 @@ impl VllmMetrics {
         if self.prefix_queries > 0.0 {
             self.prefix_hit_rate = (self.prefix_hits / self.prefix_queries) * 100.0;
         }
+        //ttft
+        if self.ttft_count > 0.0 {
+            self.ttft_avg = self.ttft_sum / self.ttft_count;
+        }
+        //e2e
+        if self.e2e_count > 0.0 {
+            self.e2e_avg = self.e2e_sum / self.e2e_count;
+        }
     }
 }
 
@@ -157,6 +177,14 @@ pub fn parse_vllm_metrics(text: &str) -> VllmMetrics {
             m.prompt_tokens_total = extract_value(v);
         } else if let Some(v) = line.strip_prefix("vllm:generation_tokens_total") {
             m.gen_tokens_total = extract_value(v);
+        } else if let Some(v) = line.strip_prefix("vllm:time_to_first_token_seconds_sum") {
+            m.ttft_sum = extract_value(v);
+        } else if let Some(v) = line.strip_prefix("vllm:time_to_first_token_seconds_count") {
+            m.ttft_count = extract_value(v);
+        } else if let Some(v) = line.strip_prefix("vllm:e2e_request_latency_seconds_sum") {
+            m.e2e_sum = extract_value(v);
+        } else if let Some(v) = line.strip_prefix("vllm:e2e_request_latency_seconds_count") {
+            m.e2e_count = extract_value(v);
         }
     }
 

@@ -609,14 +609,17 @@ pub fn run_ui(
                     };
                     ls.max = ls.histogram.max();
 
+                    // ADD WORKER HISTOGRAM TO GLOBAL
                     global_stats.histogram.add(&wm.histogram_request).unwrap();
-                    global_stats.p50 = global_stats.histogram.value_at_quantile(0.50);
-                    global_stats.p55 = global_stats.histogram.value_at_quantile(0.55);
-                    global_stats.p90 = global_stats.histogram.value_at_quantile(0.90);
-                    global_stats.p99 = global_stats.histogram.value_at_quantile(0.99);
-                    global_stats.avg = ls.avg;
-                    global_stats.max = global_stats.histogram.max();
 
+                    if global_stats.histogram.len() > 0 {
+                        global_stats.p50 = global_stats.histogram.value_at_quantile(0.50);
+                        global_stats.p55 = global_stats.histogram.value_at_quantile(0.55);
+                        global_stats.p90 = global_stats.histogram.value_at_quantile(0.90);
+                        global_stats.p99 = global_stats.histogram.value_at_quantile(0.99);
+                        global_stats.max = global_stats.histogram.max();
+                    }
+                    global_stats.avg = ls.avg;
                     p99_history.push(global_stats.p99);
                     if p99_history.len() > 120 {
                         p99_history.remove(0);
@@ -705,15 +708,23 @@ pub fn run_ui(
         }
         // Reset global stats once per second
         if last_global_reset.elapsed().as_secs() >= 1 {
+            // compute percentiles BEFORE reset
+            if global_stats.histogram.len() > 0 {
+                global_stats.p50 = global_stats.histogram.value_at_quantile(0.50);
+                global_stats.p55 = global_stats.histogram.value_at_quantile(0.55);
+                global_stats.p90 = global_stats.histogram.value_at_quantile(0.90);
+                global_stats.p99 = global_stats.histogram.value_at_quantile(0.99);
+                global_stats.max = global_stats.histogram.max();
+            }
+
+            // push into sparkline history
+            p99_history.push(global_stats.p99);
+            if p99_history.len() > 120 {
+                p99_history.remove(0);
+            }
+
+            // NOW reset for the next second
             global_stats.histogram.reset();
-            /*
-            global_stats.p50 = 0;
-            global_stats.p55 = 0;
-            global_stats.p90 = 0;
-            global_stats.p99 = 0;
-            global_stats.max = 0;
-            global_stats.avg = 0.0; // because you're using EWMA f64 now
-            */
             last_global_reset = Instant::now();
         }
 

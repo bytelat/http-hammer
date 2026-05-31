@@ -6,13 +6,12 @@ mod workers;
 
 use metrics::MetricsCollector;
 use types::{CliOptions, Config, MsgRequest, RuntimeSettings, WorkerConfig, WorkerStats};
-//use crate::types::config::{Config, CliOptions};
-//use crate::types::{Stats, Settings};
 
 use arrow2::array::Utf8Array;
 use arrow2::datatypes::Schema;
 use arrow2::io::parquet::read::{self, FileReader, read_metadata};
 use crossbeam_channel::unbounded;
+use flexi_logger::{Logger, WriteMode, FileSpec};
 use memmap2::MmapOptions;
 use std::fs::File;
 use std::time::Instant;
@@ -26,7 +25,7 @@ use std::{
 
 use crate::types::MsgStats;
 
-fn _build_url(host: &str, path: &str) -> String {
+fn build_url(host: &str, path: &str) -> String {
     format!("http://{}{}", host, path)
 }
 
@@ -153,12 +152,6 @@ fn json_object_to_fragment(obj: &serde_json::Value) -> String {
 fn load_cfg() -> anyhow::Result<Config> {
     let mut cfg = Config::load("config.json")?;
 
-    /*
-        println!("Loaded configuration: {:?}", cfg);
-        println!("Number of upstreams: {}", cfg.upstreams.len());
-        println!("template: {}", cfg.template);
-        println!("keep_alive: {}", cfg.keep_alive);
-    */
     cfg.template_str = json_object_to_fragment(&cfg.template);
     // Pick the first upstream for now
 
@@ -183,6 +176,10 @@ pub fn init_stats(num_workers: usize) -> Vec<Arc<WorkerStats>> {
 fn main() -> anyhow::Result<()> {
     let cli_opts = parse_cli_args()?;
     let cfg = load_cfg()?;
+    Logger::try_with_str(cfg.log_level.as_str())?
+        .log_to_file(FileSpec::default().directory("logs"))
+        .write_mode(WriteMode::BufferAndFlush)
+        .start()?;
     let http_requests = Arc::new(load_dataset_file(cli_opts.file.clone())?);
     // Wrap CLI options + config in Arc so they can be shared
     let cli_opts = Arc::new(cli_opts);
@@ -205,15 +202,14 @@ fn main() -> anyhow::Result<()> {
 
     let (tx_stats, rx_stats) = unbounded::<MsgStats>();
     let stats = init_stats(cfg.concurrency);
-  //  let (metrics_tx, metrics_rx) = std::sync::mpsc::channel();
-   // let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+    //  let (metrics_tx, metrics_rx) = std::sync::mpsc::channel();
+    // let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
     for worker_id in 0..cfg.concurrency {
         // One request channel per worker
         let (tx_req, rx_req) = unbounded::<MsgRequest>(); // unique channel for each worker
         req_senders.push(tx_req);
 
         // One response channel per worker
-        
 
         let worker_specific = WorkerConfig {
             worker_id: worker_id,
@@ -233,20 +229,20 @@ fn main() -> anyhow::Result<()> {
     let collector = MetricsCollector::new(
         cfg.concurrency,
         tx_stats.clone(),
-       // shutdown_rx,
-        "http://localhost:8007/metrics",
+        // shutdown_rx,
+        build_url(&cfg.upstreams[0], &cfg.routes.metrics), //"http://localhost:8007/metrics",
         Arc::clone(&cont),
     );
 
     let metrics_thread = collector.start();
-      
+
     let ui_handle = ui::start_ui_thread(
         rx_stats,
         stats.clone(),
         settings.clone(),
         //cli_opts.clone(),
         Arc::clone(&cfg),
-    ); 
+    );
     let thread_cont = Arc::clone(&cont);
     let injector_handle = injector::start_injector_thread(
         thread_cont,
@@ -258,15 +254,14 @@ fn main() -> anyhow::Result<()> {
         http_requests.clone(),
     )?;
 
-     
     ui_handle.join().unwrap();
     cont.store(false, std::sync::atomic::Ordering::Relaxed); // signal injector to shutdown
     println!("Main thread: waiting for injector to shutdown...");
     //let _ = shutdown_tx.send(());
-    
+
     injector_handle.join().unwrap();
     metrics_thread.join().unwrap();
-    
+
     for tx in req_senders {
         tx.send(MsgRequest {
             opcode: "shutdown".to_string(),

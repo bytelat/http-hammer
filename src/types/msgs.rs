@@ -49,4 +49,7 @@ pub struct MetricsMsg {
 
     pub prompt_tps: f64,
     pub gen_tps: f64,
+
+    pub ttft_avg: f64,
+    pub e2e_avg: f64,
 }
