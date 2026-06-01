@@ -9,7 +9,7 @@
     },
     "log_level": "info",
     "concurrency": 1,
-    "keep_alive": 300,
+    "keep_alive": 100,
     "cli_refresh_interval_ms": 1000,
     "template": {
         "use_beam_search": true,
