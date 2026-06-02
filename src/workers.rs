@@ -5,30 +5,53 @@ use crossbeam_channel::Receiver;
 use std::io::Write;
 //use ncurses::FALSE;
 use crate::types::worker::ConnPool;
-use crate::types::{MsgBody, MsgRequest, MsgStats, Routes, WorkerConfig, WorkerMsg};
+use crate::types::{MsgBody, MsgRequest, MsgStats, RequestOpcode, Routes, WorkerConfig, WorkerMsg};
 use log::{debug, error, info, trace};
 //use socket2::Socket;
 //use hdrhistogram::Histogram;
 
-pub fn parse_http_response(buf: &[u8]) -> Option<(Vec<u8>, &[u8])> {
+fn trim_ascii(mut bytes: &[u8]) -> &[u8] {
+    while bytes.first().is_some_and(u8::is_ascii_whitespace) {
+        bytes = &bytes[1..];
+    }
+    while bytes.last().is_some_and(u8::is_ascii_whitespace) {
+        bytes = &bytes[..bytes.len() - 1];
+    }
+    bytes
+}
+
+fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.eq_ignore_ascii_case(y))
+}
+
+fn parse_content_length(headers: &[u8]) -> Option<usize> {
+    for line in headers.split(|b| *b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some(colon) = line.iter().position(|b| *b == b':') else {
+            continue;
+        };
+        let (name, value) = line.split_at(colon);
+
+        if eq_ignore_ascii_case(trim_ascii(name), b"content-length") {
+            return std::str::from_utf8(trim_ascii(&value[1..]))
+                .ok()?
+                .parse()
+                .ok();
+        }
+    }
+    None
+}
+
+pub fn parse_http_response(buf: &[u8]) -> Option<usize> {
     // 1. Find end of headers
     let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
     let body_start = header_end + 4;
 
     // 2. Extract headers
     let headers = &buf[..header_end];
-    let headers_str = String::from_utf8_lossy(headers);
 
     // 3. Find Content-Length
-    let mut content_length = None;
-    for line in headers_str.lines() {
-        let lower = line.to_ascii_lowercase();
-        if let Some(rest) = lower.strip_prefix("content-length:") {
-            content_length = rest.trim().parse::<usize>().ok();
-        }
-    }
-
-    let content_length = content_length?;
+    let content_length = parse_content_length(headers)?;
 
     // 4. Compute how many body bytes we have
     let body_len = buf.len().saturating_sub(body_start);
@@ -42,7 +65,6 @@ pub fn parse_http_response(buf: &[u8]) -> Option<(Vec<u8>, &[u8])> {
         body_len,
         content_length
     );
-   
 
     // 5. Not enough body yet → incomplete
     if body_len < content_length {
@@ -51,10 +73,8 @@ pub fn parse_http_response(buf: &[u8]) -> Option<(Vec<u8>, &[u8])> {
 
     // 6. We have a full response
     let end = body_start + content_length;
-    let full = buf[..end].to_vec();
-    let remaining = &buf[end..];
 
-    Some((full, remaining))
+    Some(end)
 }
 
 //
@@ -64,15 +84,6 @@ fn poll_channel(rx: &Receiver<MsgRequest>) -> Option<MsgRequest> {
         Err(crossbeam_channel::TryRecvError::Empty) => None,
         Err(_) => None, // channel closed
     }
-}
-
-fn inject_template(mut body: String, template: &str) -> String {
-    if let Some(pos) = body.rfind('}') {
-        // Insert comma + template before the final }
-        let insertion = format!(",\n{}", template);
-        body.insert_str(pos, &insertion);
-    }
-    body
 }
 
 fn handle_msg_ping(
@@ -97,12 +108,9 @@ fn handle_msg_request(
     req: &MsgRequest,
     http_requests: &Vec<String>,
     upstream_path: &String,
-    template: &String,
     upstream: &String,
 ) -> String {
-    // Build HTTP request with template injection
-    let base = http_requests[req.body_index].clone();
-    let body = inject_template(base, &template);
+    let body = &http_requests[req.body_index];
     let content_len = body.len();
 
     // Build HTTP/1.1 request using the path from config
@@ -128,31 +136,29 @@ fn handle_message(
     http_requests: &Vec<String>,
     pool: &mut ConnPool,
     routs: &Routes,
-    template: &String,
 ) -> bool {
     if let Some(idx) = pool.alloc() {
         let slot = &mut pool.get_slot(idx);
 
-        let request = match req.opcode.as_str() {
-            "request" => {
-                slot.set_opcode("request".to_string());
+        let request = match req.opcode {
+            RequestOpcode::Request => {
+                slot.set_opcode(RequestOpcode::Request);
                 handle_msg_request(
                     worker_id,
                     req,
                     http_requests,
                     &routs.request,
-                    template,
                     slot.get_upstream(),
                 )
 
                 // proceed to build and send request
             }
-            "ping" => {
-                slot.set_opcode("ping".to_string());
+            RequestOpcode::Ping => {
+                slot.set_opcode(RequestOpcode::Ping);
                 handle_msg_ping(worker_id, req, &routs.ping, slot.get_upstream())
             }
-            _ => {
-                error!("Worker {worker_id}: unknown opcode {}", req.opcode);
+            RequestOpcode::Shutdown => {
+                error!("Worker {worker_id}: shutdown cannot be sent upstream");
                 pool.free(idx); // free the slot if we won't use it
                 return false;
             }
@@ -184,7 +190,10 @@ fn handle_message(
 
 pub fn worker_loop(worker_specific: WorkerConfig) {
     //println!("Worker {} started with upstreams: {:?}", worker_specific.worker_id, worker_specific.cfg.upstreams);
-    info!("Worker {} started with upstreams: {:?}", worker_specific.worker_id, worker_specific.cfg.upstreams);
+    info!(
+        "Worker {} started with upstreams: {:?}",
+        worker_specific.worker_id, worker_specific.cfg.upstreams
+    );
     // Build epoll-based connection pool
     let mut pool = ConnPool::new(
         &worker_specific.cfg.upstreams,
@@ -215,19 +224,21 @@ pub fn worker_loop(worker_specific: WorkerConfig) {
 
         // 2. If we have a request, try to send it
         if let Some(req) = &current_req {
-            match req.opcode.as_str() {
-                "shutdown" => {
-                    info!("Worker {}: received shutdown signal, exiting", worker_specific.worker_id);
+            match req.opcode {
+                RequestOpcode::Shutdown => {
+                    info!(
+                        "Worker {}: received shutdown signal, exiting",
+                        worker_specific.worker_id
+                    );
                     return;
                 }
-                _ => {
+                RequestOpcode::Request | RequestOpcode::Ping => {
                     if handle_message(
                         worker_specific.worker_id,
                         req,
                         &worker_specific.http_requests,
                         &mut pool,
                         &worker_specific.cfg.routes,
-                        &worker_specific.cfg.template_str,
                     ) {
                         worker_specific
                             .stats
@@ -289,7 +300,7 @@ pub fn worker_loop(worker_specific: WorkerConfig) {
             }
             hist_request.reset();
             hist_ping.reset();
-            
+
             trace!(
                 "Worker {} send_rate={} recv_rate={} free={}",
                 worker_specific.worker_id,
@@ -304,5 +315,31 @@ pub fn worker_loop(worker_specific: WorkerConfig) {
 
         // 5. Prevent busy spinning
         std::thread::sleep(Duration::from_micros(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_http_response;
+
+    #[test]
+    fn parses_complete_response_length() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhelloextra";
+
+        assert_eq!(parse_http_response(response), Some(43));
+    }
+
+    #[test]
+    fn parses_content_length_case_insensitively() {
+        let response = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
+
+        assert_eq!(parse_http_response(response), Some(response.len()));
+    }
+
+    #[test]
+    fn waits_for_incomplete_body() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhel";
+
+        assert_eq!(parse_http_response(response), None);
     }
 }

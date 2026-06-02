@@ -8,6 +8,7 @@
             "metrics": "/metrics"
     },
     "log_level": "info",
+    "model": "OpenOneRec/OneRec-1.7B",
     "concurrency": 1,
     "keep_alive": 100,
     "cli_refresh_interval_ms": 1000,

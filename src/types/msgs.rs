@@ -1,8 +1,13 @@
-
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestOpcode {
+    Request,
+    Ping,
+    Shutdown,
+}
 
 #[derive(Debug, Clone)]
 pub struct MsgRequest {
-    pub opcode: String,
+    pub opcode: RequestOpcode,
     pub body_index: usize,
     pub _request_id: usize,
     pub enqueue_time: std::time::Instant,
@@ -19,12 +24,12 @@ pub struct MsgStats {
     #[allow(dead_code)]
     pub opcode: String,
     pub worker_id: usize,
-    pub body: MsgBody,   
+    pub body: MsgBody,
 }
 
 pub enum MsgBody {
-     Worker(WorkerMsg),
-     Metrics(MetricsMsg),
+    Worker(WorkerMsg),
+    Metrics(MetricsMsg),
 }
 
 pub struct WorkerMsg {
@@ -34,7 +39,7 @@ pub struct WorkerMsg {
 }
 
 pub struct MetricsMsg {
-   pub running: f64,
+    pub running: f64,
     pub waiting: f64,
 
     pub kv_cache_frac: f64,

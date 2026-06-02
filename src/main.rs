@@ -5,16 +5,19 @@ mod ui;
 mod workers;
 
 use metrics::MetricsCollector;
-use types::{CliOptions, Config, MsgRequest, RuntimeSettings, WorkerConfig, WorkerStats};
+use types::{
+    CliOptions, Config, MsgRequest, RequestOpcode, RuntimeSettings, WorkerConfig, WorkerStats,
+};
 
 use arrow2::array::Utf8Array;
 use arrow2::datatypes::Schema;
 use arrow2::io::parquet::read::{self, FileReader, read_metadata};
 use crossbeam_channel::unbounded;
-use flexi_logger::{Logger, WriteMode, FileSpec};
+use flexi_logger::{FileSpec, Logger, WriteMode};
 use memmap2::MmapOptions;
 use std::fs::File;
-use std::time::Instant;
+use std::io::{self, Write};
+use std::time::{Duration, Instant};
 use std::{
     env,
     sync::{
@@ -29,7 +32,16 @@ fn build_url(host: &str, path: &str) -> String {
     format!("http://{}{}", host, path)
 }
 
-fn load_dataset_file(file_path: Option<String>) -> anyhow::Result<Vec<String>> {
+fn inject_template(mut body: String, template: &str) -> String {
+    if let Some(pos) = body.rfind('}') {
+        body.reserve(template.len() + 2);
+        body.insert_str(pos, ",\n");
+        body.insert_str(pos + 2, template);
+    }
+    body
+}
+
+fn load_dataset_file(file_path: Option<String>, template: &str, model: &str) -> anyhow::Result<Vec<String>> {
     // 1. Open file with mmap
     let path = file_path.ok_or_else(|| anyhow::anyhow!("file_path is None"))?;
     let file = File::open(&path)?;
@@ -39,6 +51,13 @@ fn load_dataset_file(file_path: Option<String>) -> anyhow::Result<Vec<String>> {
 
     // 2. Read Parquet metadata
     let metadata = read_metadata(&mut reader)?;
+    let total_row_groups = metadata.row_groups.len();
+    print!(
+        "\r\x1b[2KLoading dataset | row group 0/{} | 0/{} requests",
+        total_row_groups,
+        metadata.num_rows
+    );
+    io::stdout().flush()?;
     //    println!("Total rows: {}", metadata.num_rows);
     //    println!("Row groups: {}", metadata.row_groups.len());
 
@@ -74,7 +93,10 @@ fn load_dataset_file(file_path: Option<String>) -> anyhow::Result<Vec<String>> {
 
     //let start = Instant::now();
     // 6. Iterate over row groups
-    for maybe_chunk in file_reader.by_ref() {
+    let mut last_progress = Instant::now();
+    let mut spinner_idx = 0;
+    let spinner = ['|', '/', '-', '\\'];
+    for (row_group_idx, maybe_chunk) in file_reader.by_ref().enumerate() {
         let chunk = maybe_chunk?;
 
         // Get the messages column once per chunk
@@ -86,13 +108,37 @@ fn load_dataset_file(file_path: Option<String>) -> anyhow::Result<Vec<String>> {
             let msg = arr.value(row); // &str, no allocation
 
             // Build HTTP body
-            let http_body = format!(
-                r#"{{"model":"OpenOneRec/OneRec-1.7B","messages":{},"max_tokens":100}}"#,
-                msg
+            let base_body = format!(
+                r#"{{"model":"{}","messages":{}}}"#,
+                model, msg
             );
 
-            http_requests.push(http_body);
+            http_requests.push(inject_template(base_body, template));
+
+            if last_progress.elapsed() >= Duration::from_millis(200) {
+                spinner_idx = (spinner_idx + 1) % spinner.len();
+                print!(
+                    "\r\x1b[2KLoading dataset {} row group {}/{} | {}/{} requests",
+                    spinner[spinner_idx],
+                    row_group_idx + 1,
+                    total_row_groups,
+                    http_requests.len(),
+                    metadata.num_rows
+                );
+                io::stdout().flush()?;
+                last_progress = Instant::now();
+            }
         }
+
+        print!(
+            "\r\x1b[2KLoading dataset {} row group {}/{} | {}/{} requests",
+            spinner[spinner_idx],
+            row_group_idx + 1,
+            total_row_groups,
+            http_requests.len(),
+            metadata.num_rows
+        );
+        io::stdout().flush()?;
     }
     //let elapsed = start.elapsed();
 
@@ -180,7 +226,16 @@ fn main() -> anyhow::Result<()> {
         .log_to_file(FileSpec::default().directory("logs"))
         .write_mode(WriteMode::BufferAndFlush)
         .start()?;
-    let http_requests = Arc::new(load_dataset_file(cli_opts.file.clone())?);
+    let file_label = cli_opts.file.as_deref().unwrap_or("<none>");
+    print!("Loading dataset: {} ...", file_label);
+    io::stdout().flush()?;
+    let http_requests = Arc::new(load_dataset_file(cli_opts.file.clone(), &cfg.template_str, &cfg.model)?);
+    println!(
+        "\r\x1b[2KLoaded dataset: {} requests from {}",
+        http_requests.len(),
+        file_label
+    );
+    std::thread::sleep(Duration::from_millis(750));
     // Wrap CLI options + config in Arc so they can be shared
     let cli_opts = Arc::new(cli_opts);
     let cfg = Arc::new(cfg);
@@ -264,7 +319,7 @@ fn main() -> anyhow::Result<()> {
 
     for tx in req_senders {
         tx.send(MsgRequest {
-            opcode: "shutdown".to_string(),
+            opcode: RequestOpcode::Shutdown,
             body_index: 0,
             _request_id: 0,
             enqueue_time: Instant::now(),

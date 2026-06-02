@@ -43,11 +43,9 @@ fn parse_args() -> String {
     }
 }
 
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file_path = parse_args();
     println!("Loading OneRec dataset from: {}", file_path);
-  
 
     // 1. Open file with mmap
     let file = File::open(&file_path)?;
@@ -55,14 +53,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mmap = unsafe { MmapOptions::new().map(&file)? };
     let mut reader = std::io::Cursor::new(&mmap[..]);
 
-
-
     // 2. Read Parquet metadata
     let metadata = read_metadata(&mut reader)?;
     println!("Total rows: {}", metadata.num_rows);
     println!("Row groups: {}", metadata.row_groups.len());
-    
-    
 
     // 3. Convert Parquet schema → Arrow schema
     let arrow_fields = read::schema::parquet_to_arrow_schema(metadata.schema().fields());
@@ -100,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Get the messages column once per chunk
         let col = &chunk.columns()[messages_col_idx];
-         
+
         let arr = col.as_any().downcast_ref::<Utf8Array<i32>>().unwrap();
         // 7. Iterate rows
         for row in 0..chunk.len() {
@@ -108,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Build HTTP body
             //let _ = msg;
-             
+
             let http_body = format!(
                 r#"{{"model":"OpenOneRec/OneRec-1.7B","messages":{},"max_tokens":100}}"#,
                 msg
@@ -116,12 +110,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             http_requests.push(http_body);
         }
-        
     }
     let elapsed = start.elapsed();
-    
+
     println!("Extracted {} HTTP messages", http_requests.len());
     println!("Total time: {:.2?}", elapsed);
-    
-   Ok(())
+
+    Ok(())
 }

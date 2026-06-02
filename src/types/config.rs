@@ -8,15 +8,16 @@ pub struct Config {
     pub routes: Routes,
     pub log_level: String,
     #[serde(default)]
-    //pub upstream_path: String,  
-    //pub cli_refresh_interval_ms: u64,  
+    //pub upstream_path: String,
+    //pub cli_refresh_interval_ms: u64,
     pub keep_alive: usize, // Number of open tcp connections to keep alive per upstream
     pub template: serde_json::Value, // Keep as Value for flexibility
     // template_str is computed later
     #[serde(default)]
     pub template_str: String, // Store original template string for injection
-    //#[serde(default)]
-    //pub upstream_url: Vec<String>,
+    pub model: String, // Model name for requests
+                              //#[serde(default)]
+                              //pub upstream_url: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -33,7 +34,7 @@ impl Config {
             let cfg: Config = serde_json::from_str(&data)?;
             return Ok(cfg);
         }
-        
+
         // Try in manifest directory (works with debugger)
         if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
             let config_path = format!("{}/{}", manifest_dir, path);
@@ -42,7 +43,7 @@ impl Config {
                 return Ok(cfg);
             }
         }
-        
+
         // If all fail, return the original error
         let data = std::fs::read_to_string(path)?;
         let cfg: Config = serde_json::from_str(&data)?;

@@ -50,7 +50,7 @@ pub struct PingStats {
     pub p99: u64,
     pub max: u64,
     pub avg: f64, // <-- NEW
-   // pub ewma_avg: f64,
+                  // pub ewma_avg: f64,
 }
 /*
 #[derive(Debug, Clone)]

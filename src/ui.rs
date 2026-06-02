@@ -252,27 +252,6 @@ fn draw_general_window(
         e2e,
     ))
     .block(Block::default().borders(Borders::ALL).title("vLLM Metrics"));
-
-    /*
-        let vllm_text = Paragraph::new(format!(
-            "Running:        {:>10}    Waiting:        {:>10}\n\
-             KV Cache:       {:>10.1}%   Prefix Hit:     {:>10.1}%\n\
-             Prompt Tokens:  {:>10}    Gen Tokens:     {:>10}\n\
-             Prompt TPS:     {:>10.1}   Gen TPS:        {:>10.1}\n\
-             TTFT (avg):     {:>10.3}s  E2E (avg):      {:>10.3}s",
-            vllm.running,
-            vllm.waiting,
-            vllm.kv_cache_pct,
-            vllm.prefix_hit_rate,
-            vllm.prompt_tokens_total,
-            vllm.gen_tokens_total,
-            vllm.prompt_tps,
-            vllm.gen_tps,
-            vllm.ttft_avg,
-            vllm.e2e_avg,
-        ))
-        .block(Block::default().borders(Borders::ALL).title("vLLM Metrics"));
-    */
     f.render_widget(vllm_text, chunks[5]);
 
     // ---- P99 SPARKLINE ----

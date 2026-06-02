@@ -1,16 +1,16 @@
-use super::msgs::{MsgRequest, MsgStats};
+use super::msgs::{MsgRequest, MsgStats, RequestOpcode};
 use crate::types::config::Config;
 use crate::types::stats::WorkerStats;
 use crossbeam_channel::{Receiver, Sender};
+use log::{debug, warn};
+use nix::sys::epoll::{
+    EpollCreateFlags, EpollEvent, EpollFlags, EpollOp, epoll_create1, epoll_ctl, epoll_wait,
+};
 use nix::sys::socket::{setsockopt, sockopt::RcvBuf};
 use std::io::Read;
 use std::net::TcpStream;
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::Arc;
-use log::{debug, warn};
-use nix::sys::epoll::{
-    EpollCreateFlags, EpollEvent, EpollFlags, EpollOp, epoll_create1, epoll_ctl, epoll_wait,
-};
 
 pub struct WorkerConfig {
     pub worker_id: usize,
@@ -23,7 +23,7 @@ pub struct WorkerConfig {
 
 pub struct ConnSlot {
     upstream: String,
-    opcode: String,
+    opcode: RequestOpcode,
     stream: TcpStream,
     buffer: Vec<u8>,
     busy: bool,
@@ -59,12 +59,12 @@ impl ConnSlot {
         self.recv_time = Some(std::time::Instant::now());
     }
 
-    pub fn set_opcode(&mut self, opcode: String) {
+    pub fn set_opcode(&mut self, opcode: RequestOpcode) {
         self.opcode = opcode;
     }
 
-    pub fn get_opcode(&self) -> &String {
-        &self.opcode
+    pub fn get_opcode(&self) -> RequestOpcode {
+        self.opcode
     }
 }
 
@@ -94,7 +94,7 @@ impl ConnPool {
                     stream,
                     buffer: Vec::with_capacity(64 * 1024),
                     busy: false,
-                    opcode: String::new(),
+                    opcode: RequestOpcode::Request,
                     enqueue_time: None.into(),
                     send_time: None.into(),
                     recv_time: None.into(),
@@ -153,7 +153,7 @@ impl ConnPool {
     pub fn poll_events(
         &mut self,
         buf: &mut [u8],
-        parser: fn(&[u8]) -> Option<(Vec<u8>, &[u8])>,
+        parser: fn(&[u8]) -> Option<usize>,
         hist_request: &mut hdrhistogram::Histogram<u64>,
         hist_ping: &mut hdrhistogram::Histogram<u64>,
     ) -> usize {
@@ -165,7 +165,12 @@ impl ConnPool {
 
         for i in 0..n {
             let idx = events[i].data() as usize;
-            debug!("EPOLL EVENT: idx={} busy={} buffer_len={}", idx, self.conns[idx].busy, self.conns[idx].buffer.len());
+            debug!(
+                "EPOLL EVENT: idx={} busy={} buffer_len={}",
+                idx,
+                self.conns[idx].busy,
+                self.conns[idx].buffer.len()
+            );
             // read_from returns true when a full HTTP response is parsed
             let (done, closed) = self.read_from(idx, buf, parser, hist_request, hist_ping);
             match (done, closed) {
@@ -203,7 +208,7 @@ impl ConnPool {
         &mut self,
         idx: usize,
         buf: &mut [u8],
-        parser: fn(&[u8]) -> Option<(Vec<u8>, &[u8])>,
+        parser: fn(&[u8]) -> Option<usize>,
         hist_request: &mut hdrhistogram::Histogram<u64>,
         hist_ping: &mut hdrhistogram::Histogram<u64>,
     ) -> (bool /*complete */, bool /* closed */) {
@@ -234,11 +239,15 @@ impl ConnPool {
         }
         loop {
             match parser(&slot.buffer) {
-                Some((_, remaining)) => {
+                Some(consumed) => {
                     // full response parsed
                     //slot.set_recv_time();
                     response_complete = true;
-                    slot.buffer = remaining.to_vec();
+                    if consumed >= slot.buffer.len() {
+                        slot.buffer.clear();
+                    } else {
+                        slot.buffer.drain(..consumed);
+                    }
                     break;
                 }
                 None => {
@@ -250,8 +259,8 @@ impl ConnPool {
         }
         if response_complete {
             slot.set_recv_time();
-            match slot.get_opcode().as_str() {
-                "request" => {
+            match slot.get_opcode() {
+                RequestOpcode::Request => {
                     hist_request
                         .record(
                             slot.recv_time
@@ -261,7 +270,7 @@ impl ConnPool {
                         )
                         .unwrap();
                 }
-                "ping" => {
+                RequestOpcode::Ping => {
                     hist_ping
                         .record(
                             slot.recv_time
@@ -271,7 +280,7 @@ impl ConnPool {
                         )
                         .unwrap();
                 }
-                _ => (),
+                RequestOpcode::Shutdown => (),
             }
         }
         (response_complete, closed)

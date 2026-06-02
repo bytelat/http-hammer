@@ -7,7 +7,9 @@ pub struct RuntimeSettings {
 
 impl RuntimeSettings {
     pub fn new(initial_rps: u64) -> Self {
-        Self { rps: AtomicUsize::new(initial_rps as usize) }
+        Self {
+            rps: AtomicUsize::new(initial_rps as usize),
+        }
     }
 
     pub fn rps(&self) -> u64 {
@@ -27,7 +29,11 @@ impl RuntimeSettings {
     }
     pub fn dec_rps(&self, value: u64) {
         let current = self.rps.load(Ordering::Relaxed);
-        let new_value = if current >= value as usize { current - value as usize } else { 0 };
+        let new_value = if current >= value as usize {
+            current - value as usize
+        } else {
+            0
+        };
         self.rps.store(new_value, Ordering::Relaxed);
     }
 }
