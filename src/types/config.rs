@@ -16,8 +16,8 @@ pub struct Config {
     #[serde(default)]
     pub template_str: String, // Store original template string for injection
     pub model: String, // Model name for requests
-                              //#[serde(default)]
-                              //pub upstream_url: Vec<String>,
+                       //#[serde(default)]
+                       //pub upstream_url: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]

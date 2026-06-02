@@ -41,7 +41,11 @@ fn inject_template(mut body: String, template: &str) -> String {
     body
 }
 
-fn load_dataset_file(file_path: Option<String>, template: &str, model: &str) -> anyhow::Result<Vec<String>> {
+fn load_dataset_file(
+    file_path: Option<String>,
+    template: &str,
+    model: &str,
+) -> anyhow::Result<Vec<String>> {
     // 1. Open file with mmap
     let path = file_path.ok_or_else(|| anyhow::anyhow!("file_path is None"))?;
     let file = File::open(&path)?;
@@ -54,8 +58,7 @@ fn load_dataset_file(file_path: Option<String>, template: &str, model: &str) -> 
     let total_row_groups = metadata.row_groups.len();
     print!(
         "\r\x1b[2KLoading dataset | row group 0/{} | 0/{} requests",
-        total_row_groups,
-        metadata.num_rows
+        total_row_groups, metadata.num_rows
     );
     io::stdout().flush()?;
     //    println!("Total rows: {}", metadata.num_rows);
@@ -108,10 +111,7 @@ fn load_dataset_file(file_path: Option<String>, template: &str, model: &str) -> 
             let msg = arr.value(row); // &str, no allocation
 
             // Build HTTP body
-            let base_body = format!(
-                r#"{{"model":"{}","messages":{}}}"#,
-                model, msg
-            );
+            let base_body = format!(r#"{{"model":"{}","messages":{}}}"#, model, msg);
 
             http_requests.push(inject_template(base_body, template));
 
@@ -229,7 +229,11 @@ fn main() -> anyhow::Result<()> {
     let file_label = cli_opts.file.as_deref().unwrap_or("<none>");
     print!("Loading dataset: {} ...", file_label);
     io::stdout().flush()?;
-    let http_requests = Arc::new(load_dataset_file(cli_opts.file.clone(), &cfg.template_str, &cfg.model)?);
+    let http_requests = Arc::new(load_dataset_file(
+        cli_opts.file.clone(),
+        &cfg.template_str,
+        &cfg.model,
+    )?);
     println!(
         "\r\x1b[2KLoaded dataset: {} requests from {}",
         http_requests.len(),

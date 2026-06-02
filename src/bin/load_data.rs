@@ -12,10 +12,20 @@ use memmap2::MmapOptions;
 // --------------------------------------
 // Argument parser (separate function)
 // --------------------------------------
-fn parse_args() -> String {
+struct Args {
+    file_path: String,
+    sample_rows: usize,
+    max_cell_chars: usize,
+    column_filter: Option<String>,
+}
+
+fn parse_args() -> Args {
     let args: Vec<String> = env::args().collect();
 
     let mut file_path: Option<String> = None;
+    let mut sample_rows = 5;
+    let mut max_cell_chars = 500;
+    let mut column_filter = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -29,23 +39,96 @@ fn parse_args() -> String {
                     std::process::exit(1);
                 }
             }
+            "-n" | "--rows" => {
+                if i + 1 < args.len() {
+                    sample_rows = args[i + 1].parse().unwrap_or_else(|_| {
+                        eprintln!("Error: -n requires a positive number");
+                        std::process::exit(1);
+                    });
+                    i += 1;
+                } else {
+                    eprintln!("Error: -n requires a row count");
+                    std::process::exit(1);
+                }
+            }
+            "--full" => {
+                max_cell_chars = usize::MAX;
+            }
+            "-c" | "--column" => {
+                if i + 1 < args.len() {
+                    column_filter = Some(args[i + 1].clone());
+                    i += 1;
+                } else {
+                    eprintln!("Error: --column requires a column name");
+                    std::process::exit(1);
+                }
+            }
             _ => {}
         }
         i += 1;
     }
 
     match file_path {
-        Some(path) => path,
+        Some(path) => Args {
+            file_path: path,
+            sample_rows,
+            max_cell_chars,
+            column_filter,
+        },
         None => {
-            eprintln!("Usage: load_data -f <parquet_file>");
+            eprintln!(
+                "Usage: load_data -f <parquet_file> [-n <sample_rows>] [-c <column>] [--full]"
+            );
             std::process::exit(1);
         }
     }
 }
 
+fn truncate_value(value: String, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value;
+    }
+
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+fn print_separator(label: &str) {
+    println!("\n==================== {} ====================", label);
+}
+
+fn cell_to_string(col: &dyn Array, row: usize) -> String {
+    if col.is_null(row) {
+        return "null".to_string();
+    }
+
+    if let Some(arr) = col.as_any().downcast_ref::<Utf8Array<i32>>() {
+        return arr.value(row).to_string();
+    }
+    if let Some(arr) = col.as_any().downcast_ref::<Utf8Array<i64>>() {
+        return arr.value(row).to_string();
+    }
+    if let Some(arr) = col.as_any().downcast_ref::<Int32Array>() {
+        return arr.value(row).to_string();
+    }
+    if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
+        return arr.value(row).to_string();
+    }
+    if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
+        return arr.value(row).to_string();
+    }
+    if let Some(arr) = col.as_any().downcast_ref::<BooleanArray>() {
+        return arr.value(row).to_string();
+    }
+
+    format!("<{:?}>", col.data_type())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let file_path = parse_args();
-    println!("Loading OneRec dataset from: {}", file_path);
+    let args = parse_args();
+    let file_path = args.file_path;
+    println!("Loading dataset from: {}", file_path);
 
     // 1. Open file with mmap
     let file = File::open(&file_path)?;
@@ -89,8 +172,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     //println!("Loaded {} columns", chunk.columns().len());
     // 6. Iterate over row groups
+    let mut printed_rows = 0;
+    println!("\n=== Sample Rows ===");
     for maybe_chunk in file_reader.by_ref() {
         let chunk = maybe_chunk?;
+
+        let mut row_in_chunk = 0;
+        while printed_rows < args.sample_rows && row_in_chunk < chunk.len() {
+            print_separator(&format!("REQUEST {}", printed_rows + 1));
+            for (col_idx, field) in schema.fields.iter().enumerate() {
+                if args
+                    .column_filter
+                    .as_ref()
+                    .is_some_and(|column| column != &field.name)
+                {
+                    continue;
+                }
+
+                let value = cell_to_string(chunk.columns()[col_idx].as_ref(), row_in_chunk);
+                let value = truncate_value(value, args.max_cell_chars);
+                println!("  {}: {}", field.name, value);
+            }
+            printed_rows += 1;
+            row_in_chunk += 1;
+        }
 
         // Get the messages column once per chunk
         let col = &chunk.columns()[messages_col_idx];
@@ -103,17 +208,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Build HTTP body
             //let _ = msg;
 
-            let http_body = format!(
-                r#"{{"model":"OpenOneRec/OneRec-1.7B","messages":{},"max_tokens":100}}"#,
-                msg
-            );
+            let http_body = format!(r#"{{"model":"read from config","messages":{}}}"#, msg);
 
             http_requests.push(http_body);
         }
     }
     let elapsed = start.elapsed();
 
-    println!("Extracted {} HTTP messages", http_requests.len());
+    println!("\nExtracted {} HTTP messages", http_requests.len());
     println!("Total time: {:.2?}", elapsed);
 
     Ok(())
