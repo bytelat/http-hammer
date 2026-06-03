@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 //use std::fs;
 
 #[derive(Debug, Deserialize)]
@@ -16,8 +17,10 @@ pub struct Config {
     #[serde(default)]
     pub template_str: String, // Store original template string for injection
     pub model: String, // Model name for requests
-                       //#[serde(default)]
-                       //pub upstream_url: Vec<String>,
+    #[serde(default = "default_body_fields")]
+    pub body_fields: HashMap<String, String>,
+    //#[serde(default)]
+    //pub upstream_url: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -25,6 +28,10 @@ pub struct Routes {
     pub request: String,
     pub ping: String,
     pub metrics: String,
+}
+
+fn default_body_fields() -> HashMap<String, String> {
+    HashMap::from([("messages".to_string(), "messages".to_string())])
 }
 
 impl Config {

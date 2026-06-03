@@ -3,15 +3,18 @@
        "localhost:8007" 
     ],
     "routes": {
-            "request": "/v1/chat/completions",
-            "ping": "/ping",
-            "metrics": "/metrics"
+        "request": "/v1/chat/completions",
+        "ping": "/ping",
+        "metrics": "/metrics"
     },
     "log_level": "info",
     "model": "OpenOneRec/OneRec-1.7B",
     "concurrency": 1,
     "keep_alive": 100,
     "cli_refresh_interval_ms": 1000,
+    "body_fields": {
+        "messages": "messages"
+    },
     "template": {
         "use_beam_search": true,
          "n": 128,

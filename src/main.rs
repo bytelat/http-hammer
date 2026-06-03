@@ -15,6 +15,8 @@ use arrow2::io::parquet::read::{self, FileReader, read_metadata};
 use crossbeam_channel::unbounded;
 use flexi_logger::{FileSpec, Logger, WriteMode};
 use memmap2::MmapOptions;
+use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
@@ -32,19 +34,32 @@ fn build_url(host: &str, path: &str) -> String {
     format!("http://{}{}", host, path)
 }
 
-fn inject_template(mut body: String, template: &str) -> String {
-    if let Some(pos) = body.rfind('}') {
-        body.reserve(template.len() + 2);
-        body.insert_str(pos, ",\n");
-        body.insert_str(pos + 2, template);
+fn parse_body_value(raw: &str) -> Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+}
+
+fn build_http_body(model: &str, template: &Value, fields: Map<String, Value>) -> String {
+    let mut body = Map::new();
+    body.insert("model".to_string(), Value::String(model.to_string()));
+
+    for (key, value) in fields {
+        body.insert(key, value);
     }
-    body
+
+    if let Some(template_obj) = template.as_object() {
+        for (key, value) in template_obj {
+            body.insert(key.clone(), value.clone());
+        }
+    }
+
+    Value::Object(body).to_string()
 }
 
 fn load_dataset_file(
     file_path: Option<String>,
-    template: &str,
+    template: &Value,
     model: &str,
+    body_fields: &HashMap<String, String>,
 ) -> anyhow::Result<Vec<String>> {
     // 1. Open file with mmap
     let path = file_path.ok_or_else(|| anyhow::anyhow!("file_path is None"))?;
@@ -67,12 +82,15 @@ fn load_dataset_file(
     // 3. Convert Parquet schema → Arrow schema
     let arrow_fields = read::schema::parquet_to_arrow_schema(metadata.schema().fields());
     let schema = Schema::from(arrow_fields);
-    // Find the messages column index ONCE
-    let messages_col_idx = schema
-        .fields
-        .iter()
-        .position(|f| f.name == "messages")
-        .expect("messages column not found");
+    let mut body_columns = HashMap::new();
+    for (json_field, column_name) in body_fields {
+        let col_idx = schema
+            .fields
+            .iter()
+            .position(|f| f.name == *column_name)
+            .ok_or_else(|| anyhow::anyhow!("body field column '{}' not found", column_name))?;
+        body_columns.insert(json_field.clone(), (column_name.clone(), col_idx));
+    }
 
     let mut http_requests: Vec<String> = Vec::with_capacity(metadata.num_rows as usize);
 
@@ -102,18 +120,29 @@ fn load_dataset_file(
     for (row_group_idx, maybe_chunk) in file_reader.by_ref().enumerate() {
         let chunk = maybe_chunk?;
 
-        // Get the messages column once per chunk
-        let col = &chunk.columns()[messages_col_idx];
+        let mut arrays = HashMap::new();
+        for (json_field, (column_name, col_idx)) in &body_columns {
+            let col = &chunk.columns()[*col_idx];
+            let arr = col
+                .as_any()
+                .downcast_ref::<Utf8Array<i32>>()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("body field column '{}' must be UTF-8", column_name)
+                })?;
+            arrays.insert(json_field.as_str(), arr);
+        }
 
-        let arr = col.as_any().downcast_ref::<Utf8Array<i32>>().unwrap();
         // 7. Iterate rows
         for row in 0..chunk.len() {
-            let msg = arr.value(row); // &str, no allocation
+            let mut fields = Map::new();
+            for json_field in body_fields.keys() {
+                let arr = arrays
+                    .get(json_field.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("body field '{}' not loaded", json_field))?;
+                fields.insert(json_field.clone(), parse_body_value(arr.value(row)));
+            }
 
-            // Build HTTP body
-            let base_body = format!(r#"{{"model":"{}","messages":{}}}"#, model, msg);
-
-            http_requests.push(inject_template(base_body, template));
+            http_requests.push(build_http_body(model, template, fields));
 
             if last_progress.elapsed() >= Duration::from_millis(200) {
                 spinner_idx = (spinner_idx + 1) % spinner.len();
@@ -152,12 +181,13 @@ fn parse_cli_args() -> anyhow::Result<CliOptions> {
     let mut args = env::args().skip(1);
     let mut rps = None;
     let mut file = None;
+    let mut config = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
                 eprintln!(
-                    "Usage: http-hammer [-r <rps>] [-f <file>]\n\nOptions:\n  -r <rps>    Set requests-per-second\n  -f <file>   Set requests file path\n  -h, --help  Show this help message"
+                    "Usage: http-hammer [-r <rps>] [-f <file>] [-c <config>]\n\nOptions:\n  -r <rps>          Set requests-per-second\n  -f <file>         Set requests file path\n  -c, --config      Set config JSON path (default: config.json)\n  -h, --help        Show this help message"
                 );
                 std::process::exit(0);
             }
@@ -177,6 +207,12 @@ fn parse_cli_args() -> anyhow::Result<CliOptions> {
                     .ok_or_else(|| anyhow::anyhow!("-f flag requires a value"))?;
                 file = Some(file_path);
             }
+            "-c" | "--config" => {
+                let config_path = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("{} flag requires a value", arg))?;
+                config = Some(config_path);
+            }
 
             other => {
                 anyhow::bail!("Unknown argument: {}", other);
@@ -184,7 +220,7 @@ fn parse_cli_args() -> anyhow::Result<CliOptions> {
         }
     }
 
-    Ok(CliOptions { rps, file })
+    Ok(CliOptions { rps, file, config })
 }
 
 fn json_object_to_fragment(obj: &serde_json::Value) -> String {
@@ -195,8 +231,8 @@ fn json_object_to_fragment(obj: &serde_json::Value) -> String {
         .join(", ")
 }
 
-fn load_cfg() -> anyhow::Result<Config> {
-    let mut cfg = Config::load("config.json")?;
+fn load_cfg(path: &str) -> anyhow::Result<Config> {
+    let mut cfg = Config::load(path)?;
 
     cfg.template_str = json_object_to_fragment(&cfg.template);
     // Pick the first upstream for now
@@ -221,7 +257,8 @@ pub fn init_stats(num_workers: usize) -> Vec<Arc<WorkerStats>> {
 
 fn main() -> anyhow::Result<()> {
     let cli_opts = parse_cli_args()?;
-    let cfg = load_cfg()?;
+    let config_path = cli_opts.config.as_deref().unwrap_or("config.json");
+    let cfg = load_cfg(config_path)?;
     Logger::try_with_str(cfg.log_level.as_str())?
         .log_to_file(FileSpec::default().directory("logs"))
         .write_mode(WriteMode::BufferAndFlush)
@@ -231,8 +268,9 @@ fn main() -> anyhow::Result<()> {
     io::stdout().flush()?;
     let http_requests = Arc::new(load_dataset_file(
         cli_opts.file.clone(),
-        &cfg.template_str,
+        &cfg.template,
         &cfg.model,
+        &cfg.body_fields,
     )?);
     println!(
         "\r\x1b[2KLoaded dataset: {} requests from {}",
