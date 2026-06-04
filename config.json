@@ -1,6 +1,6 @@
 {
     "upstreams": [
-       "localhost:8007" 
+       "localhost:8000" 
     ],
     "routes": {
         "request": "/v1/chat/completions",
@@ -11,7 +11,10 @@
     "model": "OpenOneRec/OneRec-1.7B",
     "concurrency": 1,
     "keep_alive": 100,
-    "cli_refresh_interval_ms": 1000,
+    "ui": {
+        "cli_refresh_interval_ms": 1000,
+        "p99_threshold_ms": 1000
+    },
     "body_fields": {
         "messages": "messages"
     },

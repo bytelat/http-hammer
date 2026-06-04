@@ -17,10 +17,20 @@ pub struct Config {
     #[serde(default)]
     pub template_str: String, // Store original template string for injection
     pub model: String, // Model name for requests
+    #[serde(default)]
+    pub ui: UiConfig,
     #[serde(default = "default_body_fields")]
     pub body_fields: HashMap<String, String>,
     //#[serde(default)]
     //pub upstream_url: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UiConfig {
+    #[serde(default = "default_cli_refresh_interval_ms")]
+    pub cli_refresh_interval_ms: u64,
+    #[serde(default = "default_p99_threshold_ms")]
+    pub p99_threshold_ms: u64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -32,6 +42,23 @@ pub struct Routes {
 
 fn default_body_fields() -> HashMap<String, String> {
     HashMap::from([("messages".to_string(), "messages".to_string())])
+}
+
+fn default_cli_refresh_interval_ms() -> u64 {
+    1000
+}
+
+fn default_p99_threshold_ms() -> u64 {
+    150000
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            cli_refresh_interval_ms: default_cli_refresh_interval_ms(),
+            p99_threshold_ms: default_p99_threshold_ms(),
+        }
+    }
 }
 
 impl Config {

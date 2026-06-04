@@ -283,7 +283,10 @@ fn main() -> anyhow::Result<()> {
     let cfg = Arc::new(cfg);
 
     // Create the shared runtime settings
-    let settings = Arc::new(RuntimeSettings::new(cli_opts.rps.unwrap_or(0) as u64));
+    let settings = Arc::new(RuntimeSettings::new(
+        cli_opts.rps.unwrap_or(0) as u64,
+        http_requests.len(),
+    ));
     let cont = Arc::new(AtomicBool::new(true));
 
     // === Initialize stats and settings ===

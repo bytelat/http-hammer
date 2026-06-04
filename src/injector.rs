@@ -40,17 +40,19 @@ pub fn start_injector_thread(
 
             let interval = Duration::from_nanos((1_000_000_000 / rps).max(1));
             let now = Instant::now();
+            let active_total = settings.active_requests().min(total).max(1);
 
             // 2. Send request when it's time
             let mut sent_this_tick = 0;
             while now >= next_send && sent_this_tick < 1024 {
+                let body_index = current % active_total;
                 let _ = req_sender[current % num_workers].send(MsgRequest {
                     opcode: RequestOpcode::Request,
-                    body_index: current,
+                    body_index,
                     _request_id: current,
                     enqueue_time: Instant::now(),
                 });
-                current = (current + 1) % total;
+                current = (current + 1) % active_total;
 
                 next_send += interval;
                 sent_this_tick += 1;
@@ -66,15 +68,6 @@ pub fn start_injector_thread(
                     _request_id: 0,
                     enqueue_time: Instant::now(),
                 });
-                /*
-                for n in 0..num_workers {
-                    let _ = req_sender[n].send(MsgRequest {
-                        opcode: RequestOpcode::Ping,
-                        body_index: 0,
-                        _request_id: 0,
-                        enqueue_time: Instant::now(),
-                    });
-                } */
                 next_ping = now + Duration::from_secs(1);
             }
 

@@ -25,11 +25,13 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Row, Sparkline, Table},
+    widgets::{
+        Axis, Block, Borders, Chart, Clear, Dataset, GraphType, Paragraph, Row, Sparkline, Table,
+    },
 };
 use std::sync::atomic::Ordering;
 
@@ -38,6 +40,86 @@ enum UiWindow {
     General,
     Workers,
 }
+
+#[derive(Default)]
+struct ReplayInput {
+    active: bool,
+    buffer: String,
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - height) / 2),
+            Constraint::Percentage(height),
+            Constraint::Percentage((100 - height) / 2),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - width) / 2),
+            Constraint::Percentage(width),
+            Constraint::Percentage((100 - width) / 2),
+        ])
+        .split(vertical[1])[1]
+}
+
+fn replay_label(active_requests: usize, max_requests: usize) -> String {
+    if active_requests >= max_requests {
+        format!("ALL/{}", max_requests)
+    } else {
+        format!("{}/{}", active_requests, max_requests)
+    }
+}
+
+fn draw_replay_input_window(
+    f: &mut Frame,
+    replay_input: &ReplayInput,
+    active_requests: usize,
+    max_requests: usize,
+) {
+    if !replay_input.active {
+        return;
+    }
+
+    let area = centered_rect(40, 28, f.size());
+    let value = if replay_input.buffer.is_empty() {
+        " ".to_string()
+    } else {
+        replay_input.buffer.clone()
+    };
+    let current = replay_label(active_requests, max_requests);
+    let text = vec![
+        Line::from("Use first requests:"),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("> {}", value),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!("Current: {}", current)),
+        Line::from(format!("Loaded requests: {}", max_requests)),
+        Line::from("0 = all loaded dataset"),
+        Line::from("Enter apply   Esc cancel"),
+    ];
+
+    let modal = Paragraph::new(text)
+        .style(Style::default().fg(Color::White))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Active Requests"),
+        );
+
+    f.render_widget(Clear, area);
+    f.render_widget(modal, area);
+}
+
 fn fmt_num(n: f64) -> String {
     if n >= 1_000_000_000.0 {
         format!("{:.2}B", n / 1_000_000_000.0)
@@ -60,6 +142,9 @@ fn draw_general_window(
     vllm: &VllmMetrics,
     ping_stats: &PingStats,
     ping_history: &[u64],
+    p99_threshold_ms: u64,
+    active_requests: usize,
+    max_requests: usize,
 ) {
     let size = f.size();
     let now = chrono::Local::now();
@@ -111,9 +196,10 @@ fn draw_general_window(
     // ---- TOP BAR ----
     let header = Block::default().borders(Borders::ALL).title(Span::styled(
         format!(
-            "Time: {}   Uptime: {:.1}s   [g] General  [w] Workers  [+/-] RPS  [r] Reset Counters  [q] Quit",
+            "Time: {}   Uptime: {:.1}s   Replay: {}   [g] General  [w] Workers  [+/-] RPS  [a] Active Requests  [r] Reset Counters  [q] Quit",
             now.format("%H:%M:%S"),
-            uptime
+            uptime,
+            replay_label(active_requests, max_requests)
         ),
         Style::default().fg(Color::Cyan),
     ));
@@ -261,11 +347,17 @@ fn draw_general_window(
         p99_history.to_vec()
     };
 
-    let spark_color = match global_stats.p99 {
-        v if v < 50_000 => Color::Green,
-        v if v < 150_000 => Color::Yellow,
+    let spark_color = match (p99_threshold_ms, global_stats.p99) {
+        (0, _) => Color::Red,
+        (threshold, value) if value < threshold.saturating_mul(8) / 10 => Color::Green,
+        (threshold, value) if value <= threshold => Color::Yellow,
         _ => Color::Red,
     };
+
+    let p99_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(chunks[6]);
 
     let spark = Sparkline::default()
         .block(
@@ -277,7 +369,53 @@ fn draw_general_window(
         .style(Style::default().fg(spark_color))
         .bar_set(symbols::bar::NINE_LEVELS);
 
-    f.render_widget(spark, chunks[6]);
+    f.render_widget(spark, p99_chunks[0]);
+
+    let chart_data: Vec<(f64, f64)> = spark_data
+        .iter()
+        .enumerate()
+        .map(|(idx, value)| (idx as f64, *value as f64))
+        .collect();
+    let x_max = chart_data.len().saturating_sub(1).max(1) as f64;
+    let threshold = p99_threshold_ms as f64;
+    let threshold_data = vec![(0.0, threshold), (x_max, threshold)];
+    let y_max = spark_data
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .max(p99_threshold_ms)
+        .max(1) as f64;
+    let y_upper = (y_max * 1.10).ceil();
+
+    let datasets = vec![
+        Dataset::default()
+            .name("p99")
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(spark_color))
+            .data(&chart_data),
+        Dataset::default()
+            .name("threshold")
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Red))
+            .data(&threshold_data),
+    ];
+
+    let chart = Chart::new(datasets)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("p99 Threshold ({} ms)", p99_threshold_ms)),
+        )
+        .x_axis(Axis::default().bounds([0.0, x_max]))
+        .y_axis(Axis::default().bounds([0.0, y_upper]).labels(vec![
+            Span::raw("0"),
+            Span::raw((y_upper as u64).to_string()),
+        ]));
+
+    f.render_widget(chart, p99_chunks[1]);
 }
 
 fn draw_worker_window(
@@ -303,7 +441,7 @@ fn draw_worker_window(
     // ---- TOP BAR ----
     let header = Block::default().borders(Borders::ALL).title(Span::styled(
         format!(
-            "Time: {}   Uptime: {:.1}s   [g] General  [w] Workers  [+/-] RPS  [q] Quit",
+            "Time: {}   Uptime: {:.1}s   [g] General  [w] Workers  [+/-] RPS  [a] Active Requests  [q] Quit",
             now.format("%H:%M:%S"),
             uptime
         ),
@@ -424,25 +562,35 @@ fn draw_ui(
     vllm_metrics: &VllmMetrics, // NEW
     ping_stats: &PingStats,
     ping_history: &[u64],
+    p99_threshold_ms: u64,
+    replay_input: &ReplayInput,
+    active_requests: usize,
+    max_requests: usize,
 ) {
     terminal
-        .draw(|f| match current_window {
-            UiWindow::General => {
-                draw_general_window(
-                    f,
-                    local_stats,
-                    worker_stats,
-                    global_stats,
-                    p99_history,
-                    start_time,
-                    vllm_metrics,
-                    ping_stats,
-                    ping_history,
-                );
+        .draw(|f| {
+            match current_window {
+                UiWindow::General => {
+                    draw_general_window(
+                        f,
+                        local_stats,
+                        worker_stats,
+                        global_stats,
+                        p99_history,
+                        start_time,
+                        vllm_metrics,
+                        ping_stats,
+                        ping_history,
+                        p99_threshold_ms,
+                        active_requests,
+                        max_requests,
+                    );
+                }
+                UiWindow::Workers => {
+                    draw_worker_window(f, local_stats, worker_stats, global_stats, start_time);
+                }
             }
-            UiWindow::Workers => {
-                draw_worker_window(f, local_stats, worker_stats, global_stats, start_time);
-            }
+            draw_replay_input_window(f, replay_input, active_requests, max_requests);
         })
         .unwrap();
 }
@@ -542,6 +690,7 @@ pub fn run_ui(
     rx: Receiver<MsgStats>,
     worker_stats: Vec<Arc<WorkerStats>>,
     settings: Arc<RuntimeSettings>,
+    config: Arc<Config>,
 ) {
     let start_time = Instant::now(); // <‑‑ record test start
     //let mut last_update = Instant::now();
@@ -554,6 +703,7 @@ pub fn run_ui(
     let mut ping_history: Vec<u64> = Vec::with_capacity(120);
 
     let mut current_window = UiWindow::General;
+    let mut replay_input = ReplayInput::default();
 
     enable_raw_mode().unwrap();
     let mut stdout = stdout();
@@ -563,7 +713,7 @@ pub fn run_ui(
     let alpha = 0.9;
     terminal.clear().unwrap();
 
-    let target_frame_time = Duration::from_millis(33); // ~30 FPS
+    let target_frame_time = Duration::from_millis(config.ui.cli_refresh_interval_ms);
     let mut last_frame = Instant::now();
     let mut last_global_reset = Instant::now();
     loop {
@@ -647,23 +797,50 @@ pub fn run_ui(
         if event::poll(Duration::from_millis(0)).unwrap() {
             if let Event::Key(key) = event::read().unwrap() {
                 if key.kind == KeyEventKind::Repeat || key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') => break,
-                        KeyCode::Char('+') | KeyCode::Char('=') => settings.inc_rps(1),
-                        KeyCode::Char('-') | KeyCode::Char('_') => settings.dec_rps(1),
-                        KeyCode::Char('g') => current_window = UiWindow::General,
-                        KeyCode::Char('w') => current_window = UiWindow::Workers,
-                        KeyCode::Char('r') => {
-                            reset_all_counters(
-                                &mut local_stats,
-                                &mut global_stats,
-                                &mut ping_stats,
-                                &mut p99_history,
-                                &mut ping_history,
-                                &worker_stats,
-                            );
+                    if replay_input.active {
+                        match key.code {
+                            KeyCode::Esc => {
+                                replay_input.active = false;
+                                replay_input.buffer.clear();
+                            }
+                            KeyCode::Enter => {
+                                if let Ok(requested) = replay_input.buffer.parse::<usize>() {
+                                    settings.set_active_requests(requested);
+                                }
+                                replay_input.active = false;
+                                replay_input.buffer.clear();
+                            }
+                            KeyCode::Backspace => {
+                                replay_input.buffer.pop();
+                            }
+                            KeyCode::Char(c) if c.is_ascii_digit() => {
+                                replay_input.buffer.push(c);
+                            }
+                            _ => {}
                         }
-                        _ => {}
+                    } else {
+                        match key.code {
+                            KeyCode::Char('q') => break,
+                            KeyCode::Char('+') | KeyCode::Char('=') => settings.inc_rps(1),
+                            KeyCode::Char('-') | KeyCode::Char('_') => settings.dec_rps(1),
+                            KeyCode::Char('g') => current_window = UiWindow::General,
+                            KeyCode::Char('w') => current_window = UiWindow::Workers,
+                            KeyCode::Char('a') => {
+                                replay_input.active = true;
+                                replay_input.buffer.clear();
+                            }
+                            KeyCode::Char('r') => {
+                                reset_all_counters(
+                                    &mut local_stats,
+                                    &mut global_stats,
+                                    &mut ping_stats,
+                                    &mut p99_history,
+                                    &mut ping_history,
+                                    &worker_stats,
+                                );
+                            }
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -682,6 +859,10 @@ pub fn run_ui(
                 &vllm_metrics,
                 &ping_stats,
                 &ping_history,
+                config.ui.p99_threshold_ms,
+                &replay_input,
+                settings.active_requests(),
+                settings.max_requests,
             );
             last_frame = Instant::now();
         }
@@ -719,10 +900,10 @@ pub fn start_ui_thread(
     stats: Vec<Arc<WorkerStats>>,
     settings: Arc<RuntimeSettings>,
     //cli_opts: Arc<CliOptions>,
-    _config: Arc<Config>,
+    config: Arc<Config>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         // Initialize ncurses
-        run_ui(rx_stats, stats, settings);
+        run_ui(rx_stats, stats, settings, config);
     })
 }
