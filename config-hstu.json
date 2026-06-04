@@ -1,0 +1,22 @@
+{
+    "upstreams": [
+        "127.0.0.1:8000"
+    ],
+    "routes": {
+        "request": "/recommend",
+        "ping": "/ping",
+        "metrics": "/metrics"
+    },
+    "log_level": "info",
+    "model": "movielens-1m",
+    "concurrency": 5,
+    "keep_alive": 100,
+    "cli_refresh_interval_ms": 1000,
+    "body_fields": {
+        "request_id": "request_id",
+        "prompt": "prompt"
+    },
+    "template": {
+        "priority": 0
+    }
+}
