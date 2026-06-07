@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>http-hammer and vLLM Architecture</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #5d6875;
+      --line: #aab6c4;
+      --bg: #f7f8f4;
+      --panel: #ffffff;
+      --blue: #2457a6;
+      --blue-soft: #dbe8ff;
+      --green: #19745d;
+      --green-soft: #d8f1e7;
+      --amber: #926200;
+      --amber-soft: #fff1ca;
+      --red: #9d2d2d;
+      --red-soft: #ffe0df;
+      --violet: #5e4aa8;
+      --violet-soft: #ece6ff;
+      --shadow: 0 18px 40px rgba(23, 32, 42, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+
+    main {
+      scroll-snap-type: y mandatory;
+      height: 100vh;
+      overflow-y: auto;
+    }
+
+    section {
+      min-height: 100vh;
+      padding: 48px 60px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 28px;
+      scroll-snap-align: start;
+      border-bottom: 1px solid #d8ddd5;
+    }
+
+    h1,
+    h2,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 56px;
+      line-height: 1.02;
+      max-width: 1050px;
+    }
+
+    h2 {
+      font-size: 38px;
+      line-height: 1.08;
+    }
+
+    .subtitle {
+      max-width: 880px;
+      color: var(--muted);
+      font-size: 22px;
+      line-height: 1.42;
+    }
+
+    .kicker {
+      color: var(--green);
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 0.82fr) minmax(460px, 1.18fr);
+      gap: 34px;
+      align-items: center;
+    }
+
+    .panel,
+    .note,
+    .code {
+      background: var(--panel);
+      border: 1px solid #d7ded6;
+      box-shadow: var(--shadow);
+      border-radius: 8px;
+    }
+
+    .panel {
+      padding: 30px;
+    }
+
+    .note {
+      padding: 22px 24px;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.45;
+    }
+
+    .code {
+      padding: 20px 22px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 17px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      color: #243447;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 22px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid #d7ded6;
+      border-radius: 8px;
+      padding: 22px;
+    }
+
+    .card strong {
+      display: block;
+      font-size: 20px;
+      margin-bottom: 8px;
+    }
+
+    .card span {
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.4;
+    }
+
+    .diagram {
+      width: 100%;
+      background: #ffffff;
+      border: 1px solid #d6ddd5;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 28px;
+    }
+
+    .lane {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      align-items: stretch;
+      gap: 34px;
+      position: relative;
+    }
+
+    .lane.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .box {
+      min-height: 128px;
+      border: 2px solid var(--blue);
+      background: var(--blue-soft);
+      border-radius: 8px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 8px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .box.green {
+      border-color: var(--green);
+      background: var(--green-soft);
+    }
+
+    .box.amber {
+      border-color: var(--amber);
+      background: var(--amber-soft);
+    }
+
+    .box.red {
+      border-color: var(--red);
+      background: var(--red-soft);
+    }
+
+    .box.violet {
+      border-color: var(--violet);
+      background: var(--violet-soft);
+    }
+
+    .box strong {
+      font-size: 19px;
+    }
+
+    .box span {
+      color: #384655;
+      font-size: 15px;
+      line-height: 1.35;
+    }
+
+    .arrow {
+      align-self: center;
+      justify-self: center;
+      width: 100%;
+      height: 2px;
+      background: var(--line);
+      position: relative;
+      margin: 0 -18px;
+    }
+
+    .arrow::after {
+      content: "";
+      position: absolute;
+      right: -1px;
+      top: -6px;
+      width: 0;
+      height: 0;
+      border-top: 7px solid transparent;
+      border-bottom: 7px solid transparent;
+      border-left: 10px solid var(--line);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 56px minmax(0, 1fr) 56px minmax(0, 1fr);
+      gap: 0;
+      align-items: center;
+    }
+
+    .flow.four {
+      grid-template-columns: minmax(0, 1fr) 52px minmax(0, 1fr) 52px minmax(0, 1fr) 52px minmax(0, 1fr);
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .boundary {
+      border: 2px dashed #8c98a6;
+      border-radius: 8px;
+      padding: 20px;
+      background: #fbfcfb;
+    }
+
+    .boundary-title {
+      font-size: 15px;
+      color: var(--muted);
+      font-weight: 800;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+
+    .legend {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      display: inline-block;
+      border: 2px solid currentColor;
+    }
+
+    .blue { color: var(--blue); }
+    .green-text { color: var(--green); }
+    .amber-text { color: var(--amber); }
+    .red-text { color: var(--red); }
+    .violet-text { color: var(--violet); }
+
+    .foot {
+      color: var(--muted);
+      font-size: 15px;
+      position: absolute;
+      bottom: 22px;
+      left: 60px;
+      right: 60px;
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    section {
+      position: relative;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 22px;
+      font-size: 22px;
+      line-height: 1.45;
+      color: #2a3643;
+    }
+
+    li + li {
+      margin-top: 10px;
+    }
+
+    .speaker {
+      margin-top: 8px;
+      padding-top: 18px;
+      border-top: 1px solid #d9dfd7;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.4;
+    }
+
+    @media print {
+      main {
+        height: auto;
+        overflow: visible;
+      }
+
+      section {
+        min-height: 100vh;
+        page-break-after: always;
+      }
+
+      .foot {
+        position: static;
+        margin-top: 18px;
+      }
+    }
+
+    @media (max-width: 900px) {
+      section {
+        padding: 34px 22px 58px;
+      }
+
+      h1 {
+        font-size: 40px;
+      }
+
+      h2 {
+        font-size: 30px;
+      }
+
+      .subtitle,
+      ul {
+        font-size: 18px;
+      }
+
+      .split,
+      .grid-2,
+      .grid-3 {
+        grid-template-columns: 1fr;
+      }
+
+      .flow,
+      .flow.four {
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+
+      .arrow {
+        width: 2px;
+        height: 34px;
+        margin: 0 auto;
+      }
+
+      .arrow::after {
+        right: -6px;
+        top: auto;
+        bottom: -1px;
+        border-left: 7px solid transparent;
+        border-right: 7px solid transparent;
+        border-top: 10px solid var(--line);
+        border-bottom: 0;
+      }
+
+      .foot {
+        left: 22px;
+        right: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <section>
+    <div class="kicker">Architecture Walkthrough</div>
+    <h1>Explaining http-hammer against a vLLM-style serving stack</h1>
+    <p class="subtitle">
+      The simulator creates realistic HTTP load from a dataset, controls rate and concurrency, and measures how the server path behaves from the API boundary down to the engine.
+    </p>
+    <div class="grid-3">
+      <div class="card">
+        <strong>http-hammer</strong>
+        <span>Load generator: dataset, request templates, RPS control, workers, pings, metrics.</span>
+      </div>
+      <div class="card">
+        <strong>APIServer</strong>
+        <span>HTTP surface: accepts OpenAI or recommender routes and translates requests into engine work.</span>
+      </div>
+      <div class="card">
+        <strong>Core Engine</strong>
+        <span>Execution layer: schedules model work, uses KV/cache state, and returns generated or ranked output.</span>
+      </div>
+    </div>
+    <div class="foot"><span>Use browser print to save as PDF</span><span>http-hammer / vLLM architecture</span></div>
+  </section>
+
+  <section>
+    <div class="split">
+      <div>
+        <div class="kicker">Main Idea</div>
+        <h2>http-hammer is outside the model server</h2>
+        <p class="subtitle">
+          It does not run inference. It simulates clients and stresses the HTTP serving path with controlled request flow.
+        </p>
+      </div>
+      <div class="diagram">
+        <div class="flow">
+          <div class="box green">
+            <strong>Dataset</strong>
+            <span>Parquet rows: chat messages or recommender prompts.</span>
+          </div>
+          <div class="arrow"></div>
+          <div class="box blue">
+            <strong>http-hammer</strong>
+            <span>Builds JSON bodies, schedules requests, keeps sockets alive.</span>
+          </div>
+          <div class="arrow"></div>
+          <div class="box violet">
+            <strong>vLLM Server</strong>
+            <span>Receives HTTP requests and performs model serving.</span>
+          </div>
+        </div>
+        <div class="speaker">
+          Presenter note: frame http-hammer as the test client. The server can be local, remote, or behind an SSH tunnel; the hammer only needs an upstream host and route.
+        </div>
+      </div>
+    </div>
+    <div class="foot"><span>Slide 2</span><span>Boundary: simulator versus server</span></div>
+  </section>
+
+  <section>
+    <div class="kicker">Simulator Drawing</div>
+    <h2>Inside http-hammer</h2>
+    <div class="diagram">
+      <div class="flow four">
+        <div class="box green">
+          <strong>Config JSON</strong>
+          <span>upstreams, routes, model, body_fields, template, concurrency, keep_alive</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box amber">
+          <strong>Dataset Loader</strong>
+          <span>Reads Parquet and maps columns into request body fields.</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box blue">
+          <strong>Injector</strong>
+          <span>Uses current RPS to enqueue request indexes and periodic pings.</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box violet">
+          <strong>Workers</strong>
+          <span>Own connection pools, send HTTP/1.1, parse responses, update stats.</span>
+        </div>
+      </div>
+      <div style="height: 22px"></div>
+      <div class="flow">
+        <div class="box red">
+          <strong>UI Thread</strong>
+          <span>Changes runtime RPS and displays health, rate, latency, connection state.</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box red">
+          <strong>Metrics Collector</strong>
+          <span>Polls the server metrics route and pushes observations into the UI.</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box green">
+          <strong>Logs and Histograms</strong>
+          <span>Request latency, ping latency, sent/received rate, OK/error counters.</span>
+        </div>
+      </div>
+    </div>
+    <div class="foot"><span>Slide 3</span><span>What the simulator owns</span></div>
+  </section>
+
+  <section>
+    <div class="split">
+      <div>
+        <div class="kicker">Two Configured Request Shapes</div>
+        <h2>Same hammer, different API contract</h2>
+        <p class="subtitle">
+          The JSON config decides which route and body shape the simulator sends. That is why chat and recommender tests are separate runs.
+        </p>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <h2 style="font-size: 26px;">Chat / OneRec</h2>
+          <div class="code">config.json
+route: /v1/chat/completions
+model: OpenOneRec/OneRec-1.7B
+body_fields:
+  messages -> messages
+template:
+  use_beam_search: true
+  n: 128
+  max_tokens: 5</div>
+        </div>
+        <div class="panel">
+          <h2 style="font-size: 26px;">HSTU / Recommend</h2>
+          <div class="code">config-hstu.json
+route: /recommend
+model: movielens-1m
+body_fields:
+  request_id -> request_id
+  prompt -> prompt
+template:
+  priority: 0</div>
+        </div>
+      </div>
+    </div>
+    <div class="foot"><span>Slide 4</span><span>Route and body are config-owned</span></div>
+  </section>
+
+  <section>
+    <div class="kicker">vLLM Drawing</div>
+    <h2>APIServer and Core Engine responsibilities</h2>
+    <div class="diagram">
+      <div class="flow four">
+        <div class="box blue">
+          <strong>HTTP Client</strong>
+          <span>http-hammer sends POST requests and ping checks.</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box green">
+          <strong>APIServer</strong>
+          <span>Owns HTTP routes, request validation, protocol translation, streaming/result formatting.</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box violet">
+          <strong>Async Engine Client</strong>
+          <span>Bridges serving code to engine execution and request lifecycle state.</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box amber">
+          <strong>Core Engine</strong>
+          <span>Schedules decode/prefill work, manages execution state, coordinates model workers.</span>
+        </div>
+      </div>
+      <div style="height: 22px"></div>
+      <div class="boundary">
+        <div class="boundary-title">Inside the engine boundary</div>
+        <div class="grid-3">
+          <div class="box amber">
+            <strong>Scheduler</strong>
+            <span>Selects which requests run next.</span>
+          </div>
+          <div class="box amber">
+            <strong>KV Cache Manager</strong>
+            <span>Tracks memory blocks and reuse.</span>
+          </div>
+          <div class="box amber">
+            <strong>Model Executor</strong>
+            <span>Runs model kernels and produces logits/tokens.</span>
+          </div>
+        </div>
+      </div>
+      <div class="speaker">
+        Presenter note: APIServer is the HTTP/API owner; Core Engine is the execution owner. http-hammer exercises both by pushing controlled traffic through the same front door real clients use.
+      </div>
+    </div>
+    <div class="foot"><span>Slide 5</span><span>Serving architecture</span></div>
+  </section>
+
+  <section>
+    <div class="kicker">End-to-End Test Path</div>
+    <h2>What happens during a hammer run</h2>
+    <div class="diagram">
+      <div class="flow four">
+        <div class="box green">
+          <strong>1. Load rows</strong>
+          <span>Parquet data becomes a vector of JSON request bodies.</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box blue">
+          <strong>2. Shape traffic</strong>
+          <span>RPS and concurrency determine enqueue pace and open sockets.</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box violet">
+          <strong>3. Hit APIServer</strong>
+          <span>Requests enter /v1/chat/completions or /recommend.</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box amber">
+          <strong>4. Stress engine</strong>
+          <span>Server scheduling, cache, model execution, and result formatting are exercised.</span>
+        </div>
+      </div>
+      <div style="height: 22px"></div>
+      <div class="flow">
+        <div class="box red">
+          <strong>5. Parse response</strong>
+          <span>Workers wait for complete Content-Length responses.</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box red">
+          <strong>6. Record latency</strong>
+          <span>Request and ping histograms are refreshed each second.</span>
+        </div>
+        <div class="arrow"></div>
+        <div class="box green">
+          <strong>7. Observe limits</strong>
+          <span>Throughput, errors, pings, and metrics reveal bottlenecks.</span>
+        </div>
+      </div>
+    </div>
+    <div class="foot"><span>Slide 6</span><span>Run lifecycle</span></div>
+  </section>
+
+  <section>
+    <div class="split">
+      <div>
+        <div class="kicker">How to Explain the Value</div>
+        <h2>http-hammer answers operational questions</h2>
+      </div>
+      <div class="panel">
+        <ul>
+          <li>Can the APIServer keep accepting requests at the target rate?</li>
+          <li>Does the Core Engine fall behind when beam search or recommender traffic increases?</li>
+          <li>Are pings and metrics still healthy while real requests are in flight?</li>
+          <li>Which part changes first: latency, errors, free connections, or server metrics?</li>
+        </ul>
+        <div class="speaker">
+          Presenter note: this is the bridge from diagrams to a live demo. Start with low RPS, raise it, watch pings and request latency, and explain that the hammer is making pressure visible.
+        </div>
+      </div>
+    </div>
+    <div class="foot"><span>Slide 7</span><span>Why this simulator exists</span></div>
+  </section>
+
+  <section>
+    <div class="kicker">Demo Commands</div>
+    <h2>One slide for running it</h2>
+    <div class="grid-2">
+      <div class="panel">
+        <h2 style="font-size: 26px;">Chat route</h2>
+        <div class="code">cd /data/users/sagiv/git/http-hammer
+cargo run -- \
+  -c config.json \
+  -f data/your_chat_dataset.parquet \
+  -r 1</div>
+      </div>
+      <div class="panel">
+        <h2 style="font-size: 26px;">Recommend route</h2>
+        <div class="code">cd /data/users/sagiv/git/http-hammer
+cargo run -- \
+  -c config-hstu.json \
+  -f data/recommend_random.parquet \
+  -r 1</div>
+      </div>
+    </div>
+    <div class="note">
+      If the server is reachable only through the tunnel, open it first with: <strong>ssh -L 8000:10.10.12.102:8000 user@pick</strong>
+    </div>
+    <div class="foot"><span>Slide 8</span><span>Commands to show during discussion</span></div>
+  </section>
+</main>
+</body>
+</html>
